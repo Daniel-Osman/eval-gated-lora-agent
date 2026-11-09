@@ -1,25 +1,33 @@
 # NOW - eval-gated-lora-agent
 
-Status: M-01d. Composed mode is ids-only; free-text limit measured. 128 tests OK;
-67 cases frozen (40 original + 27 paraphrase) plus 32 holdout rows; holdout
-caught 32/32, exact 30/32 (remediation-targeted); original 10/10, paraphrase
-15/15; honest 52/52. On an unseen 32-reply set free-text caught only 12/32 (20
-false approvals), so composed mode — ids in, row out, one shipment, no text
-input — is the shipped answering path; it does not support address text. Next:
-teacher data pipeline, then Colab training.
+Status: spec locked, harness done. `SPEC.md` holds Daniel's locked decisions:
+Qwen3.8-27B 4-bit QLoRA (Unsloth) on Modal A100 40 GB, Modal vLLM serving on an
+A10, $30 Modal credit.
+Stages 1-6 are in the spec. Composed mode is ids-only; free-text limit measured.
+Teacher and judge call `opencode-go/deepseek-v4.1-flash` over the OpenCode Go
+subscription API; Modal's $30 credit is the only metered spend.
+128 tests OK; 67 cases frozen (40 original + 27 paraphrase) plus 32 holdout rows;
+holdout caught 32/32, exact 30/32 (remediation-targeted); original 10/10,
+paraphrase 15/15; honest 52/52. On an unseen 32-reply set free-text caught only
+12/32 (20 false approvals), so composed mode — ids in, row out, one shipment, no
+text input — is the shipped answering path; it does not support address text.
+Next: teacher data pipeline (grow the benchmark to 200+ and freeze it first),
+then Modal training.
 Verified 2026-11-09: 128 tests OK; `verify-frozen` OK; original 40-case digest
 `34833a08bbe4ff761cfdc7aad311fbe468a81061d6166bf83eee342a8c0a341f`; all-cases
 digest `ebe5b5a92be4b384acd106677239df4cc0c320607e1a2061bf64e7cf6faeda53`;
 holdout `review-01.jsonl` 32 rows, training-excluded, digest `47034a0f…c180`.
 Open: free-text generalisation 12/32; no composed address text; Phase B judge
-unwired (contract + stub only); no model trained; no teacher data; leak corpus
+unwired (stub still names a local endpoint, re-pointed to DeepSeek in stage 4);
+no model trained; no teacher data; benchmark at 67 of 200+ cases; leak corpus
 empty; nothing committed; final fresh-context PASS pending.
 
 ## What this is
 
 A store support agent whose replies are gated on database state. A separator
-between "the model's claim" and "what actually happened". Free-tier only: 7B
-QLoRA on a T4, local GGUF, 3B local judge, zero cash.
+between "the model's claim" and "what actually happened". Locked stack: a
+27B Qwen3.8 student tuned 4-bit with Unsloth on Modal, DeepSeek 4.1 Flash as
+teacher and judge, served by Modal vLLM, inside the $30 Modal credit.
 
 ## Decisions held
 
@@ -36,12 +44,14 @@ QLoRA on a T4, local GGUF, 3B local judge, zero cash.
 
 ## Next
 
-1. Daniel reviews Phase 1; no commit before he says go.
+1. Daniel reviews `SPEC.md`; no commit before he says go.
 2. Build the teacher pipeline; run `leakcheck` on every generated batch, against
-   both the tickets and the 32 holdout replies.
-3. Unsloth QLoRA notebook for Colab/Kaggle; record loss, VRAM and wall time.
+   both the tickets and the 32 holdout replies. Freeze the grown benchmark
+   first.
+3. Unsloth QLoRA run for Qwen3.8-27B on Modal A100 40 GB; record loss, VRAM and
+   wall time, weights cached on a Modal Volume.
 4. Gate the trained model through this same benchmark and holdout, and report
-   against the teacher baseline, honestly.
+   against base 27B, honestly.
 
 ## Evidence
 

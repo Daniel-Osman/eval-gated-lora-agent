@@ -12,7 +12,9 @@ SQLite state and an append-only audit row. Before any reply reaches a customer,
 a gate checks the database, not the agent's own log: if the refund failed, a
 reply that says "I've refunded your order" is rejected.
 
-**Stage: incubator, Phase 1 (harness).** There is no trained model in this repo
+**Stage: incubator, Phase 1 (harness).** `SPEC.md` holds the locked plan: 27B
+student, Modal compute, DeepSeek teacher and judge. There is no trained model in
+this repo
 yet, no teacher data and no training run. Everything below measures the harness
 against a scripted fake agent, hand-written adversarial replies across 67 frozen
 cases (40 original + 27 paraphrase), a 32-case reviewer-authored holdout that was
@@ -59,6 +61,7 @@ bench/cases/     67 cases: 42 normal + 25 adversarial
                  (40 original + 27 paraphrase: 12 honest, 15 sabotage)
 bench/holdout/review-01.jsonl  32 reviewer-authored replies, frozen, never trained on
 bench/FROZEN.json
+SPEC.md          the locked plan: stack, stages, success criteria, limits
 docs/GATE.md     gate contract, Phase A rules, retry semantics
 docs/BENCHMARK.md case format and benchmark discipline
 data/train/      empty; synthetic sessions will land here, never in bench/
@@ -151,7 +154,8 @@ The gate owns the commit. `send_reply` only validates and prepares a draft, so
 no customer-visible write exists before approval. After 3 rejections the ticket
 is escalated with its draft, not looped further.
 
-Phase A is deterministic pattern-and-state binding. Phase B is a 3B judge with
+Phase A is deterministic pattern-and-state binding. Phase B is a model judge —
+`opencode-go/deepseek-v4.1-flash` over the OpenCode Go subscription API — with
 this exact contract, parsed as JSON and validated:
 
 ```json
@@ -296,28 +300,30 @@ Not proven yet:
 - Independent review. Helm runs the fresh-context review; it is pending.
 - The browser demo.
 
-## Zero cash, and the path ahead
+## The budget, and the path ahead
 
-Constraints: Qwen2.5-7B-Instruct QLoRA 4-bit on a free Colab/Kaggle T4 (Unsloth),
-synthetic teacher on free-tier APIs only, local GGUF serving (llama.cpp/Ollama),
-Qwen2.5-3B local judge. No paid GPU, API, hosting or trial credits.
+Stack, locked in `SPEC.md`: Qwen3.8-27B 4-bit QLoRA via Unsloth on a Modal A100
+40 GB at $2.10/hr, DeepSeek 4.1 Flash as teacher and Phase B judge, Modal vLLM
+serving on an A10 24 GB with scale to zero. Teacher and judge ride the existing
+OpenCode Go subscription with no metered per-token line item; Modal's $30/month
+free credit is the only metered spend.
 
 Next, in order:
 
-1. Composed mode is the shipped answering path: the model chooses an action, the
-   code writes the sentence. Grow the plan vocabulary, not the phrase rules.
+1. Grow the benchmark to 200+ cases and freeze it before any teacher data
+   exists.
 2. Teacher pipeline: 15-20 hand-written seed tasks, schema-driven scenario
-   expansion, strict session format, validators. Raw and filtered output kept
-   separately.
-3. Unsloth QLoRA notebook with config, loss curve, VRAM, wall time, adapter and
-   merged GGUF export.
-4. Wire Phase B: the free-text judge is where coverage beyond the tested
+   expansion to 1,000+ sessions, strict session format, validators, leak check.
+   Raw and filtered output kept separately.
+3. Unsloth QLoRA run on Modal with config, loss curve, VRAM, wall time and the
+   adapter saved to a Modal Volume.
+4. Wire Phase B: the judge is where free-text coverage beyond the tested
    phrasings must come from. Until it is real, free-text mode stays at the
    measured 12/32.
-5. Evaluate the model against the frozen benchmark and the holdout, and against
-   the teacher baseline: action accuracy, final-state accuracy, reply-fact
-   accuracy, gate catch rate, composed-mode false claim rate. Report the truth
-   next to the number, including a loss.
+5. Evaluate 27B base and 27B + adapter against the frozen benchmark and the
+   holdout: action accuracy, final-state accuracy, reply-fact accuracy, gate
+   catch rate, false-escalation rate, composed-mode false claim rate. Report
+   the truth next to the number, including a loss.
 
 Keys, when they exist, come from the environment and never enter the repo or a
 notebook.

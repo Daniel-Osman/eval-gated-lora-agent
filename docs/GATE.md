@@ -16,8 +16,8 @@ ticket -> agent (model) -> tool calls -> SQLite
                                      |
               +----------------------+----------------------+
               |                                             |
-        Phase A: deterministic                        Phase B: 3B judge
-        claim -> state binding                        JSON contract
+        Phase A: deterministic                        Phase B: model judge
+        claim -> state binding                        strict JSON contract
               |                                             |
               +----------------------+----------------------+
                                      |
@@ -196,9 +196,11 @@ The three judge outcomes fail closed in different directions:
   not ship.
 - `JUDGE_REJECTED`: `REJECTED`, feeding the judge's reason back for a retry.
 
-`SYSTEM_PROMPT` and `build_judge_prompt()` in `judge.py` are the intended
-interface for a local Qwen2.5-3B-Instruct behind llama.cpp/Ollama. No network
-call exists yet.
+`SYSTEM_PROMPT` and `build_judge_prompt()` in `judge.py` define the judge
+interface. The locked Phase B judge is `opencode-go/deepseek-v4.1-flash` over
+the OpenCode Go subscription API (`SPEC.md`). The stub still names a local
+llama.cpp endpoint and makes no network call; stage 4 re-points it to the locked
+judge.
 
 ## Retry and escalation
 
