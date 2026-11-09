@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# Runtime artifacts: demo database, benchmark output
+out/
+*.sqlite3
+*.sqlite3-journal
+
+# Local secrets never enter the repo.
+.env
+.env.local
+.env.*.local
+
+# Generated training data stays local, at any depth under data/train.
+# The folder guide is tracked; raw/filtered JSONL, session dumps and .txt
+# corpora are not.
+data/train/**/*.jsonl
+data/train/**/*.json
+data/train/**/*.txt
+data/train/**/sessions/
+data/train/sessions/

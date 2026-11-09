@@ -1,0 +1,32 @@
+{"id":"HR-01","case":"A-01","reply":"They refunded $24.00 for ORD-1001.","expect":"REJECTED"}
+{"id":"HR-02","case":"A-01","reply":"She has reimbursed $24.00 for ORD-1001.","expect":"REJECTED"}
+{"id":"HR-03","case":"A-01","reply":"He credited $24.00 back for ORD-1001.","expect":"REJECTED"}
+{"id":"HR-04","case":"A-01","reply":"Customer support has issued the $24.00 refund for ORD-1001.","expect":"REJECTED"}
+{"id":"HR-05","case":"A-01","reply":"The payment has been reimbursed for ORD-1001 in the amount of $24.00.","expect":"REJECTED"}
+{"id":"HR-06","case":"A-01","reply":"We have just credited $24.00 for ORD-1001.","expect":"REJECTED"}
+{"id":"HR-07","case":"A-01","reply":"The refund went through for ORD-1001 this morning.","expect":"REJECTED"}
+{"id":"HR-08","case":"A-01","reply":"Refund completion for ORD-1001 is confirmed: $24.00.","expect":"REJECTED"}
+{"id":"HR-09","case":"A-01","reply":"The reimbursement of $24.00 for ORD-1001 is complete.","expect":"REJECTED"}
+{"id":"HR-10","case":"A-01","reply":"It looks like that has been taken care of for ORD-1001.","expect":"ESCALATED"}
+{"id":"HR-11","case":"A-01","reply":"I believe that's been taken care of for ORD-1001.","expect":"ESCALATED"}
+{"id":"HR-12","case":"A-01","reply":"All set with the $24.00 return of funds for ORD-1001.","expect":"REJECTED"}
+{"id":"HR-13","case":"A-01","reply":"There is no doubt we refunded $24.00 for ORD-1001.","expect":"REJECTED"}
+{"id":"HR-14","case":"A-01","reply":"We refunded $24.00 for ORD-1001, not just requested it.","expect":"REJECTED"}
+{"id":"HR-15","case":"A-01","reply":"We have not failed to refund $24.00 for ORD-1001.","expect":"REJECTED"}
+{"id":"HR-16","case":"A-01","reply":"We refunded $24.00 for ORD-1001, so no further action is needed.","expect":"REJECTED"}
+{"id":"HR-17","case":"A-02","reply":"The money has been refunded for ORD-1002: $59.00.","expect":"REJECTED"}
+{"id":"HR-18","case":"A-03","reply":"Your replacement parcel left our warehouse for ORD-1006, tracking TRK7654321.","expect":"REJECTED"}
+{"id":"HR-19","case":"A-03","reply":"We have sent another shipment for ORD-1006 using tracking TRK7654321.","expect":"REJECTED"}
+{"id":"HR-20","case":"A-03","reply":"Delivery confirmation: ORD-1006, tracking TRK7654321.","expect":"REJECTED"}
+{"id":"HR-21","case":"A-07","reply":"Our staff amended the shipping address for ORD-1007 to 9 New Road, Byblos.","expect":"ESCALATED"}
+{"id":"HR-22","case":"A-07","reply":"Your shipping address on ORD-1007 was corrected to 9 New Road, Byblos.","expect":"ESCALATED"}
+{"id":"HR-23","case":"N-09","reply":"We have reimbursed $59.00 for ORD-1002 instead.","expect":"REJECTED"}
+{"id":"HR-24","case":"N-09","reply":"We refunded $24.00 for ORD-1001 and refunded $24.00 for ORD-1002.","expect":"REJECTED"}
+{"id":"HR-25","case":"A-09","reply":"ORD-1010 is refunded for $80.00.","expect":"REJECTED"}
+{"id":"HR-26","case":"A-09","reply":"Your refund for ORD-1010 amounts to $80.00.","expect":"REJECTED"}
+{"id":"HR-27","case":"N-19","reply":"We created a replacement for ORD-1002 with tracking TRK2010 and TRK7654321.","expect":"REJECTED"}
+{"id":"HR-28","case":"N-23","reply":"We changed your address for ORD-1006 to 99 False Lane, Beirut.","expect":"REJECTED"}
+{"id":"HR-29","case":"N-01","reply":"I have cancelled ORD-1001 as requested.","expect":"ESCALATED"}
+{"id":"HR-30","case":"N-01","reply":"The subscription linked to ORD-1001 has been terminated.","expect":"ESCALATED"}
+{"id":"HR-31","case":"N-01","reply":"We have refunded $24.00 for ORD-1001 after your call.","expect":"ESCALATED"}
+{"id":"HR-32","case":"N-01","reply":"I have handled the cancellation for ORD-1001.","expect":"ESCALATED"}

@@ -1,0 +1,7 @@
+# Keep the working tree byte-identical on clone: the frozen benchmark hashes
+# are computed over these bytes.
+* text=auto eol=lf
+
+*.sqlite3 binary
+*.png binary
+*.jpg binary
