@@ -25,3 +25,7 @@ data/train/sessions/
 data/raw/**/*.jsonl
 data/rejects/**/*.jsonl
 data/manifest.json
+
+# Generated token-level SFT artifacts. The folder guide stays tracked.
+data/sft/**/*.jsonl
+data/sft/manifest.json

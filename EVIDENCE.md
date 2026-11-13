@@ -1,9 +1,231 @@
-# Evidence — teacher corpus, then benchmark growth
+# Evidence — teacher corpus, one adapter, the load check
 
 2026-11-13 · author's run (preliminary, not the PASS) · tree not committed
 
 **Status: gates green on this tree.** The unmet item is the fresh-context
 review, which the author cannot run.
+
+# Milestone 4 — SFT data, one adapter, the load-and-shape check (2026-11-13)
+
+Author's record. This milestone is **complete and gated, not accepted**: the
+fresh-context verdict is outstanding, and a PASS is what accepts it.
+
+The 178 admitted traces became 178 token-level SFT rows; one QLoRA run on a
+Modal A100 40 GB produced an adapter; the adapter was loaded back from the
+Volume and probed with two training-split cases. No benchmark score, no
+base-model comparison, no judge, no commit.
+
+## The converter
+
+```
+python -m shopagent.sft
+```
+
+Writes `data/sft/sft.jsonl` and `data/sft/manifest.json`. Both are gitignored;
+`data/sft/README.md` is tracked and states the record shape.
+
+| | value |
+|---|---|
+| records | 178 (160 train / 18 val) |
+| output digest | `5cab4f46…4850fb` |
+| rendered tokens | 289,759 |
+| length, min / median / max | 981 / 1700 / 2540 |
+| supervised tokens, stored masks, both splits | **17,748 = 6.1 %** (min 18, median 102.5, max 205) |
+| tokenizer | `unsloth/Qwen3.8-27B-unsloth-bnb-4bit@8aa5f05d26b7…`, `Qwen3_5Tokenizer`, `enable_thinking` false |
+| val split | 18 ids, `overfit watch only; every scenario is seen, so val loss is not generalisation` |
+
+Mask rule, quoted from the manifest:
+
+> Loss is kept only on tokens that decode to an assistant plan text and, for
+> free-text rows, the assistant reply text; the system prompt, the customer
+> ticket, every tool result, the empty think block and the chat markers are
+> masked with -100.
+
+Spans are anchored to rendered turns, not to message index, and each kept span
+must decode back to its assistant content or the converter refuses. That matters
+because the chat template merges consecutive `tool` messages into one `user`
+turn, so a text search could lift a tool result into the loss.
+
+## The run
+
+Run `full-20261113T180308Z`. Log `out/modal-train.log`; the Volume record
+`/vol/runs/full-20261113T180308Z/run.json` is printed in full at the end of that
+log, and every figure below comes from it.
+
+| | value |
+|---|---|
+| GPU | `NVIDIA A100-SXM4-40GB`, 39.5 GB |
+| epochs / optimizer steps | 3 / 120 (planned 120, cap 200) |
+| loss, first five points / last five points | 0.3892 / 0.1545 |
+| loss, step 1 → step 120 | 0.7537 → 0.1571 |
+| wall / per optimizer step | 1045.8 s / 8.48 s |
+| peak VRAM | 21.22 GB |
+| adapter | r=16, alpha=16, dropout 0, 496 modules, **116,727,808** trainable parameters, 992 tensors changed |
+| EOS | 342 `<|im_end|>` tokens added in memory across 342 supervised spans; the file on disk is not rewritten |
+| status | `ok` |
+
+Loss points at steps 1, 10 … 120: 0.7537, 0.5314, 0.2383, 0.2245, 0.1980,
+0.1946, 0.2035, 0.1902, 0.1864, 0.1501, 0.1476, 0.1314, 0.1571. The last point
+sits above step 110's 0.1314. Thirteen logged points over three epochs is a
+shape check, not a convergence claim; nothing here says the loss has stopped
+falling, and nothing here scores the model.
+
+The converter's one open item is closed by the run, not by an edit: the producer
+masks the assistant `<|im_end|>`, so the training loader appends the assistant
+stop token to every supervised span in memory (342 runs, 342 tokens), taking the
+supervised total from 17,748 to 18,090 (16,230 in the train split).
+
+`Unverified:` the exact `modal run …` command line. The log begins after
+submission, so the invocation is a record of the session, not of the file.
+
+## The load-and-shape check
+
+`out/modal-check.log`, same run id, `check_adapter` entrypoint, `EXIT=0`.
+
+Proof that the saved weights are the trained weights:
+
+```
+adapter: /vol/runs/full-20261113T180308Z/adapter; peft names ['default'], active ['default']
+adapter: 116727808 trainable parameters (trained count 116727808)
+adapter: ...layers.0.linear_attn.out_proj.lora_B.default.weight (torch.float32 [5120, 16])
+         is torch.equal to ...lora_B.weight in adapter_model.safetensors
+```
+
+The two probes are training-split cases, so agreement would prove the weights
+and the prompt format load — nothing more. The log's own banner says exactly
+that.
+
+**Free text, N-31, passed the eyeball test.** Prompt 4,461 chars; raw output:
+
+```
+Your order ORD-1013 for 1 Linen throw totals $34.99 and is marked paid. The shipment SHP-1013 via DHL has tracking number TRK1013 and status delivered.
+```
+
+That is plausible and matches the tool result. It is one sample, printed and not
+scored (`N-31: free text, printed and not scored`).
+
+**Composed, N-105, failed.** Prompt 3,336 chars. Target plan
+`{"action": "refund", "amount_cents": 2100, "order_id": "ORD-1059"}`; raw output:
+
+```
+[{"args": {"order_id": "ORD-1059"}, "name": "get_order"}, {"args": {"amount_cents": 2100, "order_id": "ORD-1059"}, "name": "refund_order"}]
+```
+
+The student wrote the free-text plan list. The composed validator refused it:
+`composed-plan validator refused: unknown action None; composed mode renders
+status, refund, reshipment or address`.
+
+**The likely cause is the training mix, not the renderer.** 14 composed rows
+against 164 free-text rows, under one shared system prompt, so the model learned
+the dominant shape. The renderer and validator are proven elsewhere
+(`tests/test_compose.py`, 20/20 composed cases rendered and approved); the
+adapter load is proven above. What is missing is a student that emits the
+composed shape at all.
+
+**Call it what it is:** composed mode — the project's safety claim, the only
+mode with a provable no-false-claim property — has no working student output
+yet. The fix is an open decision, not a patch: the options include a separate
+system prompt per mode, a weighted or regenerated composed slice, and
+constrained decoding. Nothing was changed here.
+
+## Review fixes (2026-11-13)
+
+The fresh-context review returned FAIL on five items. All five are applied here;
+the milestone stays unaccepted until the next verdict.
+
+1. **The parser bypassed its own contract.** `parse_plan` searched for the first
+   `{` and decoded from there, so a free-text list of tool calls returned `ok`.
+   It now decodes the whole output: a non-object root is refused, trailing text
+   is refused, and only then do the plan keys face `_check_plan`. A code fence is
+   unwrapped and its content faces the same rule. `tests/test_train_app.py`
+   proves the list form is refused and the object form passes (7 tests, red
+   before the fix). N-105's real failure is unchanged and stays recorded: the
+   model emitted a list, and the old parser refused it only because the list's
+   first object had no `action`.
+2. **Estimated cost was called spend.** `train/modal_app.py` now tags every
+   figure `"kind": "estimated"` with a `basis` string, and prints
+   `estimated cost`; the metered figure lives in the Modal dashboard. This
+   record and `NOW.md` carry the metered number beside the estimate.
+3. **The loss denominator mixed three counts.** Stored masks: 17,748 across both
+   splits. Trained: 16,230 in the train split after the EOS extension. Volume
+   record: 18,090. Each number now appears only in its own context.
+4. **Acceptance language.** Stage 3 and milestone 4 read "complete and gated,
+   awaiting the fresh-context verdict", never "done".
+5. **Fresh-clone instructions.** `README.md` now separates the stdlib-only demo
+   and bench from the full suite, which needs Transformers, the cached pinned
+   tokenizer and the gitignored corpus.
+
+## Daniel's decision: the gate stays strict
+
+The 71 `gate:REJECTED` and 28 `gate:ESCALATED` refund replies remain rejects. No
+brief softening, no re-run for them. This closes the `Open:` item in milestone 3
+below and in `NOW.md`.
+
+## Gates on this tree
+
+| Command | Exit | Result |
+|---|---|---|
+| `python -m unittest discover -s tests -q` | 0 | `Ran 255 tests` · `OK` |
+| `python -m shopagent.cli validate` | 0 | `284 cases: 134 normal, 150 adversarial (original 40 + growth and paraphrase 244)` · `valid` |
+| `python -m shopagent.cli bench` | 0 | holdout 1 32/32 caught, 30/32 exact; holdout 2 30/40 sabotage caught, 16/20 honest, 43/60 exact; 229/229 honest approved; 0 sabotage approved |
+| `python -m shopagent.cli leakcheck --corpus data/train` | 0 | 178 sessions, 92 holdout replies, four match lists empty, closest pair `N-79 ~ shard-000.jsonl:63` (0.75), `CLEAN` |
+
+`data/train` was read, never written; `data/sft` was not regenerated in this
+pass — its digests are the ones the run consumed (`5cab4f46…`).
+
+## Spend
+
+The three `cost.total_usd` figures are estimates: GPU, CPU and memory for the
+wall time at list rates. They exclude adapter save and Volume commit, so they are
+not the bill.
+
+| Run | Log | Estimated cost |
+|---|---|---|
+| smoke (`scope smoke`, 20 steps) | `out/modal-smoke4.log` | $0.2284 |
+| full (`full-20261113T180308Z`) | `out/modal-train.log` | $0.7388 |
+| load check | `out/modal-check.log` | $0.0751 |
+| **sum of the three estimates** | | **$1.0423** |
+
+The metered figure for the month is **$5.99564250**, and the billed figure is
+**$0.00**: credits cover it. That month includes compute $2.945, storage $3.013
+and egress $0.033 — storage and egress are outside what the runs estimate, and
+the Volume's adapter save and commit are part of why the metered number is the
+larger one. Read the metered figure from the Modal dashboard; it is not written
+by this repo.
+
+## Not proven
+
+- **Composed mode has no working student output.** N-105 emitted a free-text
+  plan list and the validator refused it. The safety claim is a property of the
+  renderer, not yet of the model.
+- **The loss is measured on 16,230 supervised tokens**, the train split after the
+  in-memory EOS extension, which is 5.6 % of 289,759. (The file's masks hold
+  17,748 across both splits; with EOS the run's total is 18,090.) Whether that
+  volume teaches a plan shape at all is untested; 0.1545 at step 120 says the
+  model fitted those tokens, not that it learned a behaviour.
+- **Every bench scenario is seen.** All 18 val rows are seen scenarios, so val
+  loss watches overfit only. No score from this corpus is a generalisation score;
+  the two holdouts are the outside check, and neither was in a prompt.
+- **No evaluation ran.** Base 27B and 27B + adapter were never scored against the
+  frozen benchmark or the holdouts. One free-text sample and one composed sample
+  is not a measurement.
+- The composed probe is one case, and it is a failure. A second composed case
+  could fail differently or pass; neither outcome is measured here.
+- The 52 rows generated under brief revision 1 are still in the corpus and still
+  not regenerated.
+- `Unverified:` the exact `modal run` invocation for both runs.
+- **Not accepted.** The fresh-context verdict is outstanding. Helm spawns
+  `helm/shipwright-reviewer` for the PASS that counts; nothing here accepts the
+  milestone, and the author's review is preliminary only.
+- Nothing committed.
+
+## Open
+
+- **Wire Phase B** (stage 4) and evaluate base 27B against 27B + adapter on the
+  frozen bench and both holdouts.
+- **The composed-format decision.** How the student learns the composed plan
+  shape: a separate prompt per mode, a rebalanced composed slice, constrained
+  decoding, or something else. Daniel's call; no patch was written.
 
 # Milestone 3 — teacher corpus (2026-11-13)
 
@@ -260,12 +482,13 @@ untouched, `verify-frozen` passes, and the digests above match `bench/FROZEN.jso
 
 ## Open
 
-- **`gate:REJECTED` 71 and `gate:ESCALATED` 28.** After the brief fix these are
-  the largest remaining cause: 99 of 106 rejects. Several replies describe a
-  *pre-existing* refund or shipment as one the agent made, and Phase A rejects a
-  completion claim it cannot bind to a change this run. Whether that is a gate
-  reading to accept, a teacher instruction to sharpen, or a Phase B job is
-  Daniel's decision. Not fixed here; no rule or threshold was touched.
+- **`gate:REJECTED` 71 and `gate:ESCALATED` 28 — closed 2026-11-13.** After the
+  brief fix these were the largest remaining cause: 99 of 106 rejects. Several
+  replies describe a *pre-existing* refund or shipment as one the agent made, and
+  Phase A rejects a completion claim it cannot bind to a change this run.
+  Daniel decided the gate stays strict: those 99 remain rejects, with no brief
+  softening and no re-run for them. No rule or threshold was touched. See
+  milestone 4.
 
 ---
 

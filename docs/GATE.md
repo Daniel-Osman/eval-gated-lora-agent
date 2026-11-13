@@ -297,6 +297,10 @@ human_queue(ticket_id, attempts, last_reason, status, ts)
   `update_address` needs new `line1` and `city` text, and the plan forbids text.
   An address change must already be written by the caller before the sentence
   renders. This is a limit of composed mode, not a defect to repair.
+- The composed property above is a property of the renderer, not yet of the
+  student. `out/modal-check.log` case N-105: the tuned model wrote the free-text
+  plan list and the validator refused `unknown action None`. The bench's composed
+  cases therefore test the renderer. `docs/COMPOSED-MODE.md`.
 - The honest false-rejection rate is measured on 229 scripted replies with fixed
   wording, and the paraphrase suite is 79 fixed restatements. New wording needs a
   test.
