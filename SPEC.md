@@ -41,10 +41,16 @@ Rules that follow from the table:
 - The only money we spend is Modal's $30/month credit. Teacher and judge calls
   ride the existing OpenCode Go subscription and carry no metered per-token line
   item. Report the Modal spend; do not hide it.
-- The key comes from `OPENCODE_GO_API_KEY` in the environment — never in the
-  repo, never in a notebook.
-- Unverified for now: base URL, rate limits and concurrency. Record all three on
-  the first real call in stage 2.
+- The key comes from `OPENCODE_API_KEY` in the environment, sent as
+  `Authorization: Bearer $OPENCODE_API_KEY` — never in the repo, never in a
+  notebook. `OPENCODE_GO_API_KEY` does not exist on this box.
+- Gateway `https://opencode.ai/zen/go/v1`, chat path `/chat/completions`,
+  models list at `/models`. A request without an `x-opencode-session` header
+  gets 400 `MissingSessionID`; any stable session id per run works.
+- 8 concurrent requests succeeded at 1.0-1.8 s each, with no rate-limit header
+  and no 429. Rate limits above 8 remain unmeasured.
+- `https://opencode.ai/zen/v1` answers 402 Insufficient balance for this
+  account, so the Go path is the one to use.
 
 ## 3. Date engine
 
@@ -150,10 +156,9 @@ review. The author never signs its own stage.
   different generator, reported separately. The README must name the shared
   model.
 - **Phase B needs network and an API key at demo time.** The key comes from
-  `OPENCODE_GO_API_KEY` in the environment, never from the repo, never from a
+  `OPENCODE_API_KEY` in the environment, never from the repo, never from a
   notebook. If the judge is unreachable the gate fails closed and the demo says
-  so. Base URL, rate limits and concurrency are unverified until the first real
-  call in stage 2.
+  so. Rate limits above 8 concurrent requests remain unmeasured.
 - **Cost.** Teacher and judge are covered by the existing OpenCode Go
   subscription; no metered per-token line item. The only metered spend is
   Modal's $30/month credit.

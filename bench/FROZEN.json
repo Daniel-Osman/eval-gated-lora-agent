@@ -9,13 +9,20 @@
     "bench/cases/normal.jsonl": "256e8662dea63f69a89e0a5eb0609553d97b724eb07d8a1aa7f2ae208c1c1ec1",
     "bench/cases/paraphrase-ext.jsonl": "d09a018521e722fd88e4bb1eb151bcd995d243436add0f0e7aac9db6e54fb904",
     "bench/cases/paraphrase.jsonl": "44b4bcd712d5041024f7ac75af11c9ffaea8abf76104c129e71a4f462c530cde",
-    "bench/holdout/review-01.jsonl": "47034a0fae6376d6ff8a9c221896a21470746b50da4064e3ee425c6fcad1c180"
+    "bench/holdout/review-01.jsonl": "47034a0fae6376d6ff8a9c221896a21470746b50da4064e3ee425c6fcad1c180",
+    "bench/holdout/review-02.jsonl": "304039255b772587452e636d3660d5e06d1b732b4fa9a2462c720f3814dd921c"
   },
-  "frozen_at": "2026-11-11",
+  "frozen_at": "2026-11-13",
   "holdout": {
     "file": "bench/holdout/review-01.jsonl",
     "rows": 32,
     "sha256": "47034a0fae6376d6ff8a9c221896a21470746b50da4064e3ee425c6fcad1c180",
+    "training_excluded": true
+  },
+  "holdout_2": {
+    "file": "bench/holdout/review-02.jsonl",
+    "rows": 60,
+    "sha256": "304039255b772587452e636d3660d5e06d1b732b4fa9a2462c720f3814dd921c",
     "training_excluded": true
   },
   "normal": 134,

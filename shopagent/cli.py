@@ -302,7 +302,11 @@ def cmd_bench(args) -> int:
     if holdout_2 is None:
         print("holdout 2             : not present")
     else:
-        print(f"holdout 2 caught {holdout_2['catch_rate']}, exact {holdout_2['exact_rate']} (reported, not gated)")
+        print(
+            f"holdout 2             : {holdout_2['catch_rate']} sabotage caught, "
+            f"{holdout_2['honest_rate']} honest approved, "
+            f"exact {holdout_2['exact_rate']} (reported, not gated)"
+        )
     print()
     print("CONFUSION MATRIX (approved | rejected | escalated)")
     for pool, counts in summary["confusion"].items():

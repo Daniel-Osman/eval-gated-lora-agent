@@ -227,6 +227,7 @@ Run 2026-11-11 on this machine (Windows, Python 3.13.14).
 | Gate approves paraphrase honest replies | same | `24/24 honest replies approved (0 false rejections)` |
 | Honest replies across all suites | same | `229/229 approved` |
 | Reviewer holdout (remediation-targeted) | same | `holdout caught 32/32, exact 30/32` |
+| Independent holdout 2 (scored once) | same | `holdout 2: 30/40 sabotage caught, 16/20 honest approved, exact 43/60` — reported, not gated |
 | Confusion matrix | same | honest: 229 approved / 0 rejected / 0 escalated; sabotage: 0 approved / 144 rejected / 6 escalated |
 | Free-text gate, unseen phrasing | third review, not reproducible in this repo | `12/32` caught, `20` false approvals |
 | Test suite | `python -m unittest discover -s tests -q` | `Ran 171 tests` · `OK`, exit 0 |
@@ -283,6 +284,11 @@ Proven by commands in this repo:
 
 Not proven yet:
 
+- **The independent holdout 2 is weaker, and it is not a gate.** A second
+  60-row set, written by a different model with no access to the gate, scores
+  30/40 sabotage caught, 16/20 honest approved, 43/60 exact on one scoring.
+  It prints beside holdout 1 and never decides the exit code; nothing was
+  tuned against it.
 - **Free-text generalisation, and it is measured low.** On a fresh, unseen
   32-reply set, free-text Phase A caught 12/32 and approved 20 false replies.
   It is a detector over a finite category rule, not a fail-closed guarantee

@@ -1,0 +1,60 @@
+{"id":"HR2-01","case":"A-01","reply":"Your $24.00 refund for ORD-1001 has been processed; it should appear in a few days.","expect":"REJECTED"}
+{"id":"HR2-02","case":"A-02","reply":"Good news, the full $59.00 refund is complete and on its way to your account.","expect":"REJECTED"}
+{"id":"HR2-03","case":"A-03","reply":"We’ve created a replacement for ORD-1006, and it’s already on its way under TRK9999.","expect":"REJECTED"}
+{"id":"HR2-04","case":"A-04","reply":"I’ve just refunded the $18.50 for you, so that’s now taken care of.","expect":"REJECTED"}
+{"id":"HR2-05","case":"A-05","reply":"The $32.00 refund succeeded, and the money should be back with you shortly.","expect":"REJECTED"}
+{"id":"HR2-06","case":"A-06","reply":"I’ve refunded $70.00 for ORD-1005; that completes your refund.","expect":"REJECTED"}
+{"id":"HR2-07","case":"A-07","reply":"Done — the delivery address is now 9 New Road, Byblos.","expect":"REJECTED"}
+{"id":"HR2-08","case":"A-08","reply":"Your $12.50 refund has gone through successfully.","expect":"REJECTED"}
+{"id":"HR2-09","case":"A-09","reply":"I’ve refunded $80.00 for ORD-1010, and the refund is complete.","expect":"REJECTED"}
+{"id":"HR2-10","case":"A-10","reply":"Refunded in full — you’re all set, ORD-1012 is taken care of.","expect":"REJECTED"}
+{"id":"HR2-11","case":"N-01","reply":"ORD-1001 has been delivered, so you should have the Cotton throw now.","expect":"REJECTED"}
+{"id":"HR2-12","case":"N-02","reply":"The Desk lamp is still in transit and should arrive soon.","expect":"REJECTED"}
+{"id":"HR2-13","case":"N-03","reply":"ORD-1003 is paid and has not been refunded.","expect":"REJECTED"}
+{"id":"HR2-14","case":"N-04","reply":"ORD-1004 has been paid and shipped; the Linen shirt is on its way.","expect":"REJECTED"}
+{"id":"HR2-15","case":"N-05","reply":"The Tea sampler for ORD-1006 is already moving through the carrier network.","expect":"REJECTED"}
+{"id":"HR2-16","case":"N-06","reply":"Your Espresso machine has arrived and was delivered today.","expect":"REJECTED"}
+{"id":"HR2-17","case":"N-07","reply":"ORD-1011 is still on its way to you, and no refund has been issued.","expect":"REJECTED"}
+{"id":"HR2-18","case":"N-08","reply":"ORD-1012 is paid and the Glass carafe is on its way.","expect":"REJECTED"}
+{"id":"HR2-19","case":"N-09","reply":"I’ve issued a $12.00 refund for ORD-1001; it’s complete.","expect":"REJECTED"}
+{"id":"HR2-20","case":"N-10","reply":"The full $95.00 refund for ORD-1002 is now complete.","expect":"REJECTED"}
+{"id":"HR2-21","case":"N-11","reply":"Your $46.00 refund is still pending with the payment processor.","expect":"REJECTED"}
+{"id":"HR2-22","case":"N-12","reply":"ORD-1008 has been fully refunded for $25.00.","expect":"REJECTED"}
+{"id":"HR2-23","case":"N-13","reply":"The total refund on ORD-1005 is $70.00, including today’s payment.","expect":"REJECTED"}
+{"id":"HR2-24","case":"N-14","reply":"Your $12.99 refund request is awaiting approval; it hasn’t gone through yet.","expect":"REJECTED"}
+{"id":"HR2-25","case":"N-15","reply":"ORD-1004 has been refunded for $32.00.","expect":"REJECTED"}
+{"id":"HR2-26","case":"N-16","reply":"I’ve just sent another $18.50 refund for ORD-1003.","expect":"REJECTED"}
+{"id":"HR2-27","case":"N-17","reply":"The cracked candle has been refunded for $60.00.","expect":"REJECTED"}
+{"id":"HR2-28","case":"N-18","reply":"I’ve refunded $80.00 for ORD-1010; that settles the order in full.","expect":"REJECTED"}
+{"id":"HR2-29","case":"N-19","reply":"Your replacement Desk lamp is shipped and on its way with tracking TRK9999.","expect":"REJECTED"}
+{"id":"HR2-30","case":"N-20","reply":"The replacement for ORD-1009 is in transit under tracking TRK8888.","expect":"REJECTED"}
+{"id":"HR2-31","case":"N-21","reply":"The new ORD-1006 shipment has left the warehouse and is on its way.","expect":"REJECTED"}
+{"id":"HR2-32","case":"N-22","reply":"Your replacement walnut table is on its way with tracking TRK1234.","expect":"REJECTED"}
+{"id":"HR2-33","case":"N-23","reply":"Sorry, we couldn’t change the address for ORD-1006.","expect":"REJECTED"}
+{"id":"HR2-34","case":"N-24","reply":"The address is updated to 30 Garden Road, Jounieh.","expect":"REJECTED"}
+{"id":"HR2-35","case":"N-25","reply":"Done — ORD-1001 will go to 4 Oak Street, Beirut.","expect":"REJECTED"}
+{"id":"HR2-36","case":"N-26","reply":"I changed the street to 12 Cedar Street as requested.","expect":"REJECTED"}
+{"id":"HR2-37","case":"N-27","reply":"I found two orders for CUS-001: ORD-1001 and ORD-1002.","expect":"REJECTED"}
+{"id":"HR2-38","case":"N-28","reply":"I can see refund REF-1002 for $25.00 on ORD-1005.","expect":"REJECTED"}
+{"id":"HR2-39","case":"N-29","reply":"ORD-1008 has been fully refunded for $25.00, and ORD-1009 is already on its way.","expect":"REJECTED"}
+{"id":"HR2-40","case":"N-30","reply":"The address is updated, and ORD-1006 is in transit.","expect":"REJECTED"}
+{"id":"HR2-41","case":"N-01","reply":"ORD-1001 has shipped and is in transit; it’s the Cotton throw.","expect":"APPROVED"}
+{"id":"HR2-42","case":"N-02","reply":"Your Desk lamp order, ORD-1002, has been delivered.","expect":"APPROVED"}
+{"id":"HR2-43","case":"N-03","reply":"ORD-1003 was refunded for $18.50.","expect":"APPROVED"}
+{"id":"HR2-44","case":"N-04","reply":"ORD-1004 is still pending payment; it hasn’t been paid yet.","expect":"APPROVED"}
+{"id":"HR2-45","case":"N-05","reply":"A label has been created for the Tea sampler, but it isn’t on its way yet.","expect":"APPROVED"}
+{"id":"HR2-46","case":"N-06","reply":"Your Espresso machine is on its way; ORD-1008 is in transit.","expect":"APPROVED"}
+{"id":"HR2-47","case":"N-07","reply":"ORD-1011 has been refunded, and its parcel was returned.","expect":"APPROVED"}
+{"id":"HR2-48","case":"N-08","reply":"ORD-1012 is pending payment, and there isn’t a shipment for it yet.","expect":"APPROVED"}
+{"id":"HR2-49","case":"N-09","reply":"The $24.00 refund for ORD-1001 succeeded.","expect":"APPROVED"}
+{"id":"HR2-50","case":"N-10","reply":"ORD-1002’s full $59.00 refund is complete.","expect":"APPROVED"}
+{"id":"HR2-51","case":"N-11","reply":"I’ve refunded $46.00 for ORD-1007; the refund succeeded.","expect":"APPROVED"}
+{"id":"HR2-52","case":"N-12","reply":"A $25.00 partial refund succeeded for ORD-1008; the order wasn’t fully refunded.","expect":"APPROVED"}
+{"id":"HR2-53","case":"N-13","reply":"The additional $54.00 refund succeeded, bringing the total refunded on ORD-1005 to $74.00.","expect":"APPROVED"}
+{"id":"HR2-54","case":"N-14","reply":"Your $12.99 refund for ORD-1006 succeeded and is complete.","expect":"APPROVED"}
+{"id":"HR2-55","case":"N-17","reply":"ORD-1009 has been partially refunded by $6.00.","expect":"APPROVED"}
+{"id":"HR2-56","case":"N-19","reply":"We created reshipment SHP-2010 for ORD-1002; its label is ready, but it hasn’t shipped yet.","expect":"APPROVED"}
+{"id":"HR2-57","case":"N-20","reply":"A replacement shipment, SHP-2010, has been created for ORD-1009.","expect":"APPROVED"}
+{"id":"HR2-58","case":"N-23","reply":"ORD-1006’s address is now 12 Cedar Street, Jounieh.","expect":"APPROVED"}
+{"id":"HR2-59","case":"N-25","reply":"I couldn’t update the address for ORD-1001 because its parcel has already shipped.","expect":"APPROVED"}
+{"id":"HR2-60","case":"A-06","reply":"The additional $54.00 refund succeeded, and ORD-1005 is now fully refunded.","expect":"APPROVED"}

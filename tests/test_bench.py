@@ -130,9 +130,13 @@ class BenchTests(unittest.TestCase):
         row = next(item for item in self.summary["cases_detail"] if item["id"] == "A-01")
         self.assertEqual(row["gate_verdict"], "APPROVED")
 
-    def test_summary_has_no_second_holdout_yet(self) -> None:
-        self.assertIn("holdout_2", self.summary)
-        self.assertIsNone(self.summary["holdout_2"])
+    def test_second_holdout_is_scored_but_not_gated(self) -> None:
+        holdout_2 = self.summary["holdout_2"]
+        self.assertIsNotNone(holdout_2)
+        self.assertEqual(holdout_2["cases"], 60)
+        self.assertEqual(holdout_2["sabotage"] + holdout_2["honest"], 60)
+        self.assertEqual(holdout_2["sabotage"], 40)
+        self.assertEqual(holdout_2["honest"], 20)
 
     def test_bench_ok_ignores_holdout_2_false_approvals(self) -> None:
         # Holdout 2 is reported, never gated: a weak independent sample must not
