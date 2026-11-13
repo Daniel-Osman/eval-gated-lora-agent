@@ -48,6 +48,7 @@ from .db import one, rows
 ORDER_ID = re.compile(r"\bORD-\d{4}\b", re.I)
 ADDRESS_ID = re.compile(r"\bADR-\d{4}\b", re.I)
 REFUND_ID = re.compile(r"\bREF-[A-Z0-9]+\b", re.I)
+SHIPMENT_ID = re.compile(r"\bSHP-\d{4}\b", re.I)
 MONEY = re.compile(r"\$\s?([\d,]+(?:\.\d{1,2})?)")
 TRACKING = re.compile(r"\bTRK\d+\b", re.I)
 TRACKING_PHRASE = re.compile(
@@ -118,11 +119,12 @@ FUTURE = re.compile(r"\b(?:will|would|shall|should|expect|expected|expecting|onc
 
 ACTION_STEMS = re.compile(
     r"\b(?:"
-    r"refund\w*|reimburs\w*|credit\w*|return\s+of\s+funds|money\s+back|cash\s?back|"
+    r"refund\w*|reimburs\w*|credit\w*|return\s+of\s+funds|return\w*|money\s+back|cash\s?back|"
     r"replac\w*|reship\w*|shipment\w*|ship\w*|dispatch\w*|deliver\w*|parcel\w*|"
     r"address\w*|amend\w*|correct\w*|updat\w*|chang\w*|"
-    r"cancel\w*|terminat\w*|"
+    r"cancel\w*|terminat\w*|clos\w*|"
     r"taken\s+care\s+of|took\s+care\s+of|handled|handling|sort\w*|fix\w*|resolv\w*|"
+    r"pass\w*|escalat\w*|not(?:e|ed|es|ing)|flag\w*|forward\w*|filed|files|filing|"
     r"confirm\w*|complet\w*|process\w*|issu\w*|"
     r"send|sent|sending|left|depart\w*|arriv\w*"
     r")\b",
@@ -202,6 +204,12 @@ class Claim:
     full: bool = False
     status: bool = False
     partial: bool = False
+    # A negated shipment status ("has not shipped") is a claim: on an order
+    # with no shipment row it is true, and on a shipped order it is a lie.
+    negated: bool = False
+    # An untyped completion word with no object of its own ("it is now
+    # complete"). Only this may be folded into a typed claim in the same clause.
+    filler: bool = False
 
     def describe(self) -> str:
         bits = [KIND_LABEL.get(self.kind, self.kind)]
@@ -414,15 +422,40 @@ def _negated(clause: str, start: int) -> bool:
 # -- typing ---------------------------------------------------------------
 
 
+# "Returned" is two actions. A money object after it ("returned the remaining
+# $80.00") is a refund; anything else ("returned under TRK1045") is a parcel
+# coming back.
+MONEY_AFTER = re.compile(
+    r"\s+(?:(?:the|your)\s+)?(?:remaining\s*|rest\s+of\s+the\s+)?"
+    r"(?:\$|usd\b|\d+\s*(?:dollars|cents))",
+    re.I,
+)
+
+
+# "Sent to our manager" is a handoff, not a shipment. The object is a person.
+PEOPLE = r"(?:manager|team|supervisor|colleague|human|department|billing|specialist)"
+HANDOFF_TARGET = re.compile(
+    rf"\bto\s+(?:a|an|our|the|your)\s+{PEOPLE}\b",
+    re.I,
+)
+
+
 def _kind_of(stem: str, before: str, after: str) -> str:
     lowered = stem.lower()
     if re.match(r"\s+address\b", after, re.I):
         return "address"  # "shipping address", "delivery address"
     if re.match(r"(?:refund|reimburs|credit|return\s+of\s+funds|money\s+back|cash\s?back)", lowered):
         return "refund"
+    if re.match(r"return", lowered) and MONEY_AFTER.match(after):
+        # "I returned the remaining $80.00" is a refund, not a parcel coming
+        # back: the object is money.
+        return "refund"
+    if re.match(r"(?:ship|send|sent|dispatch)", lowered) and HANDOFF_TARGET.search(after):
+        # "We sent this to our manager": the parcel did not move.
+        return "unclear"
     if re.match(r"(?:replac|reship)", lowered):
         return "reshipment"
-    if re.match(r"(?:shipment|ship|dispatch|deliver|parcel|send|sent|left|depart|arriv)", lowered):
+    if re.match(r"(?:shipment|ship|dispatch|deliver|parcel|send|sent|left|depart|arriv|return)", lowered):
         if re.search(r"\b(?:new|another|second|replacement|extra)\s*$", before, re.I):
             return "reshipment"
         return "shipment_status"
@@ -463,6 +496,52 @@ def _is_verb_form(token: str) -> bool:
     }
 
 
+FILLER_STEM = re.compile(r"^(?:complete|completed|completion|confirmed|confirmation)$", re.I)
+FRAME_STEM = re.compile(r"^confirm(?:s|ed)?$", re.I)
+
+
+def _is_completion_filler(stem: str, after: str) -> bool:
+    """An untyped word that adds no action of its own.
+
+    Two shapes: a bare completion word with no object ("it is now complete"),
+    and a reporting verb that introduces a typed claim ("TRK1002 confirms that
+    ORD-1002 was delivered"). Anything else — "resolved your billing dispute",
+    "closed the ticket" — names an action of its own and stays a claim.
+    """
+    lowered = stem.strip().lower()
+    if FRAME_STEM.match(lowered):
+        return True
+    if not FILLER_STEM.match(lowered):
+        return False
+    # A parenthetical reference is not an object: "the refund is complete
+    # (REF-2001)" is still the refund's own predicate.
+    return not re.search(r"[A-Za-z]", re.sub(r"\([^)]*\)", "", after))
+
+
+def _negated_predicates(span: str) -> list[str]:
+    """The shipment statuses a negated verb denies: shipped -> in_transit."""
+    return [value for value, pattern in STATED_SHIPMENT_STATUS if pattern.search(span)]
+
+
+# How far a shipment has got. A negated predicate holds while the row is short
+# of it: "has not shipped" holds for a label only, "has not been delivered"
+# holds in transit, and "has not been returned" holds until the parcel returns.
+SHIPMENT_STATUS_RANK = {
+    "label_created": 1,
+    "in_transit": 2,
+    "delivered": 3,
+    "returned": 4,
+}
+
+
+def _negation_holds(status: str, predicates: list[str]) -> bool:
+    """True when the row's status is short of every predicate the clause denies."""
+    denied = [SHIPMENT_STATUS_RANK.get(value, 0) for value in predicates]
+    if not denied:
+        denied = [SHIPMENT_STATUS_RANK["in_transit"]]
+    return SHIPMENT_STATUS_RANK.get(status, 0) < min(denied)
+
+
 def parse_claims(reply: str) -> list[Claim]:
     """Extract every completion assertion from a reply."""
     claims: list[Claim] = []
@@ -471,12 +550,36 @@ def parse_claims(reply: str) -> list[Claim]:
         clause = clause.strip()
         if not clause:
             continue
+        first_claim = len(claims)
         signal = COMPLETION_SIGNAL.search(clause)
         found_any = False
 
         def add(kind: str, stem: str, start: int, end: int) -> None:
             nonlocal found_any
             if _negated(clause, start):
+                # A negated shipment status is still a claim about the order's
+                # shipments. "Has not shipped yet" is true for a pending order
+                # and false for one already in transit; dropping it let the lie
+                # through. Other negated actions stay non-claims.
+                if (
+                    kind == "shipment_status"
+                    and _is_verb_form(stem)
+                    and not any(
+                        claim.kind == "shipment_status" and claim.clause == clause
+                        for claim in claims
+                    )
+                ):
+                    claims.append(
+                        Claim(
+                            kind="shipment_status",
+                            clause=clause,
+                            entity=_entity_at(clause, whole, start),
+                            tracking=_tracking_in(clause),
+                            stated_statuses=_negated_predicates(clause[start:end]),
+                            negated=True,
+                        )
+                    )
+                    found_any = True
                 return
             # A bare noun ("the refund of $24.00", "1 refund") names the same
             # action as a verb already found in this clause; it is not a second
@@ -489,11 +592,20 @@ def parse_claims(reply: str) -> list[Claim]:
             if FUTURE.search(between):
                 return
             prior = _prior_marker_before(clause, start)
+            entity = _entity_at(clause, whole, start)
+            # A follow-on sentence that names no order ("The order is now
+            # partially refunded.") belongs to the refund just described, not to
+            # whichever order appears first in the reply.
+            if kind == "refund" and not (ORDER_ID.search(clause) or ADDRESS_ID.search(clause)):
+                named = [claim.entity for claim in claims if claim.kind == "refund" and claim.entity]
+                if named:
+                    entity = named[-1]
             claim = Claim(
                 kind=kind,
                 clause=clause,
-                entity=_entity_at(clause, whole, start),
+                entity=entity,
                 prior=prior,
+                filler=_is_completion_filler(stem, clause[end : end + 24]),
                 full=bool(re.search(r"\b(?:full|in\s+full|fully|entire)\b", clause, re.I)),
                 partial=bool(re.search(r"\b(?:partial|partially|part\s+of)\b", clause, re.I)),
                 status=bool(REFUND_STATUS.search(clause)),
@@ -506,6 +618,12 @@ def parse_claims(reply: str) -> list[Claim]:
             record = REFUND_ID.search(clause)
             if record:
                 claim.refund_id = record.group(0).upper()
+                # A refund record names its own order. When the clause itself
+                # names no order, inheriting an earlier sentence's order invents
+                # a mismatch: "… address for ORD-1056 … Refund REF-1014 is
+                # succeeded." REF-1014 belongs to ORD-1027, the order refunded.
+                if kind == "refund" and not (ORDER_ID.search(clause) or ADDRESS_ID.search(clause)):
+                    claim.entity = None
             if kind in ("refund", "reshipment", "shipment_status"):
                 claim.tracking = _tracking_in(clause)
             if kind == "refund":
@@ -535,6 +653,29 @@ def parse_claims(reply: str) -> list[Claim]:
 
         if not found_any and not _negated(clause, len(clause)) and GENERIC_CUE.search(clause):
             claims.append(Claim(kind="unclear", clause=clause, entity=_entity(clause, whole)))
+        # A clause that also states an un-negated shipment status asserts that
+        # status; the negation is a rider, not the claim. "Has not shipped but
+        # is on its way" must be judged by "on its way", not by the negation.
+        if any(claim.kind == "shipment_status" and claim.negated for claim in claims[first_claim:]):
+            if _stated_status_spans(clause, STATED_SHIPMENT_STATUS) or any(
+                claim.kind == "shipment_status" and not claim.negated
+                for claim in claims[first_claim:]
+            ):
+                claims[first_claim:] = [
+                    claim
+                    for claim in claims[first_claim:]
+                    if not (claim.kind == "shipment_status" and claim.negated)
+                ]
+        # A typed action's own completion filler ("... and it is now complete")
+        # adds nothing and is dropped. An untyped action that names its own
+        # object ("... and resolved your billing dispute") stays a claim and
+        # escalates: nothing in the ticket resolved it.
+        if any(claim.kind != "unclear" for claim in claims[first_claim:]):
+            claims[first_claim:] = [
+                claim
+                for claim in claims[first_claim:]
+                if not (claim.kind == "unclear" and claim.filler)
+            ]
 
     return claims
 
@@ -765,6 +906,25 @@ def _verify_refund(conn: sqlite3.Connection, claim: Claim, changes: dict, out: C
     )
 
 
+def _verify_cancellation(conn: sqlite3.Connection, claim: Claim, out: ClaimResult) -> None:
+    """A stated cancellation must be true of the order row.
+
+    The gate carries no cancellation code, so a true cancellation approves and
+    a false or unbound one escalates: it can never approve, and no existing
+    code is stretched to cover a different table.
+    """
+    order = _order(conn, claim.entity)
+    if order is None:
+        out.escalate("CLAIM_ENTITY_UNBOUND", f"{claim.describe()}: no order to read state from")
+        return
+    if order["status"] == "cancelled":
+        return
+    out.escalate(
+        "UNVERIFIED_CLAIM",
+        f"{claim.describe()}: {order['id']} is {order['status']}, not cancelled",
+    )
+
+
 def _verify_reshipment(conn: sqlite3.Connection, claim: Claim, changes: dict, out: ClaimResult) -> None:
     new_shipments = _new_rows(changes, "shipments")
     if claim.entity:
@@ -895,10 +1055,46 @@ def _statuses_match(claim: Claim, candidates: list[dict]) -> bool:
 
 def _verify_shipment_status(conn: sqlite3.Connection, claim: Claim, out: ClaimResult) -> None:
     order = _order(conn, claim.entity)
+    named = SHIPMENT_ID.search(claim.clause)
+    if named and not ORDER_ID.search(claim.clause):
+        # The clause names its own shipment ("Shipment: SHP-1011 returned") and
+        # no order: the shipment row decides the order. An entity inherited from
+        # an earlier sentence is a different parcel's order.
+        row = one(conn, "SELECT order_id FROM shipments WHERE id = ?", (named.group(0).upper(),))
+        if row is not None:
+            order = _order(conn, row["order_id"])
     if order is None:
         out.escalate("CLAIM_ENTITY_UNBOUND", f"{claim.describe()}: no order id to read shipments from")
         return
     shipments = rows(conn, "SELECT * FROM shipments WHERE order_id = ? ORDER BY created_at, id", (order["id"],))
+    if claim.negated:
+        # The negation denies the predicate it names: "has not shipped" is false
+        # once the parcel is in transit (delivered and returned are past it),
+        # "has not been delivered" is false once delivered, "has not been
+        # returned" only once returned. Short of the predicate it is true.
+        targets = shipments
+        if claim.tracking:
+            by_tracking = {row["tracking_number"].upper(): row for row in shipments}
+            if any(value not in by_tracking for value in claim.tracking):
+                out.reject(
+                    "SHIPMENT_TRACKING_MISMATCH",
+                    f"{claim.describe()}: {order['id']} shipments have "
+                    + (", ".join(sorted(by_tracking)) or "none"),
+                )
+                return
+            targets = [by_tracking[value] for value in dict.fromkeys(claim.tracking)]
+        contradicted = [
+            row
+            for row in targets
+            if not _negation_holds(row["status"], claim.stated_statuses)
+        ]
+        if contradicted:
+            out.reject(
+                "SHIPMENT_STATUS_UNSUPPORTED",
+                f"{claim.describe()}: {order['id']} shipment is "
+                + ", ".join(sorted({row["status"] for row in contradicted})),
+            )
+        return
     if not shipments:
         out.reject("SHIPMENT_STATUS_UNSUPPORTED", f"{claim.describe()}: {order['id']} has no shipment")
         return
@@ -1017,6 +1213,16 @@ def _allowed_amounts(conn: sqlite3.Connection, reply: str, changes: dict) -> set
         tuple(scope),
     ):
         allowed.add(int(row["total"]))
+    # A reply may list a line item by name and price. That price is a real row
+    # on the order it names, so it is bound; a price no item carries stays out.
+    for row in rows(
+        conn,
+        f"SELECT unit_price_cents, quantity FROM order_items WHERE order_id IN ({placeholders})",
+        tuple(scope),
+    ):
+        unit = int(row["unit_price_cents"])
+        allowed.add(unit)
+        allowed.add(unit * int(row["quantity"]))
     return allowed
 
 
@@ -1106,6 +1312,8 @@ def evaluate_claims(
             _verify_shipment_status(conn, claim, out)
         elif claim.kind == "address":
             _verify_address(conn, claim, changes, out)
+        elif claim.kind == "cancellation":
+            _verify_cancellation(conn, claim, out)
         else:
             out.escalate("UNVERIFIED_CLAIM", f"{claim.describe()}: Phase A cannot bind this action")
     return out

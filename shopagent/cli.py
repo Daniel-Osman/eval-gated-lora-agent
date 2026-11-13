@@ -241,7 +241,7 @@ def cmd_trace(args) -> int:
 
 
 def cmd_bench(args) -> int:
-    from .bench import run_all
+    from .bench import bench_ok, run_all
     from .freeze import read, verify
 
     if read() is not None:
@@ -292,9 +292,17 @@ def cmd_bench(args) -> int:
           f"{paraphrase['false_approvals']} false approvals)")
     print(f"paraphrase honest     : {paraphrase['honest_approval_rate']} honest replies approved "
           f"({paraphrase['false_rejections']} false rejections)")
+    stated = summary["stated_honest"]
+    print(f"stated honest replies : {stated['approval_rate']} approved "
+          f"({stated['false_rejections']} false rejections)")
     print(f"honest, all suites    : {summary['honest_approved_all']}/{summary['honest_total_all']} approved")
     holdout = summary["holdout"]
-    print(f"holdout caught {holdout['catch_rate']}, exact {holdout['exact_rate']}")
+    print(f"holdout 1 caught {holdout['catch_rate']}, exact {holdout['exact_rate']} (gated)")
+    holdout_2 = summary.get("holdout_2")
+    if holdout_2 is None:
+        print("holdout 2             : not present")
+    else:
+        print(f"holdout 2 caught {holdout_2['catch_rate']}, exact {holdout_2['exact_rate']} (reported, not gated)")
     print()
     print("CONFUSION MATRIX (approved | rejected | escalated)")
     for pool, counts in summary["confusion"].items():
@@ -353,19 +361,7 @@ def cmd_bench(args) -> int:
                   f"gate={row['gate_verdict']} codes={row['gate_codes']}")
 
     print(f"\nfull results: {out / 'bench-results.json'}")
-    ok = (
-        not summary["validation_errors"]
-        and oracle["consistent"] == f"{summary['cases']}/{summary['cases']}"
-        and scripted["overall"] == f"{summary['cases']}/{summary['cases']}"
-        and paraphrase["oracle_state"] == f"{paraphrase['cases']}/{paraphrase['cases']}"
-        and paraphrase["oracle_facts"] == f"{paraphrase['cases']}/{paraphrase['cases']}"
-        and gate["false_approvals"] == 0
-        and gate["false_rejections"] == 0
-        and paraphrase["false_approvals"] == 0
-        and paraphrase["false_rejections"] == 0
-        and holdout["caught"] == holdout["cases"]
-    )
-    return 0 if ok else 1
+    return 0 if bench_ok(summary) else 1
 
 
 def cmd_freeze(_args) -> int:
@@ -437,13 +433,14 @@ def cmd_leakcheck(args) -> int:
 
 
 def cmd_validate(_args) -> int:
-    from .bench import load_all_cases, validate_cases
+    from .bench import load_all_cases, load_cases, validate_cases
 
     cases = load_all_cases()
+    original = len(load_cases())
     errors, warnings = validate_cases(cases)
     print(f"{len(cases)} cases: {sum(1 for c in cases if c['kind'] == 'normal')} normal, "
           f"{sum(1 for c in cases if c['kind'] == 'adversarial')} adversarial "
-          f"(original 40 + paraphrase {len(cases) - 40})")
+          f"(original {original} + growth and paraphrase {len(cases) - original})")
     for warning in warnings:
         print(f"warning: {warning}")
     for error in errors:

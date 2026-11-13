@@ -115,10 +115,12 @@ def _refund_line(tk: ToolKit, order: dict, ticket: str) -> str:
             idempotency_key=f"auto-{tk.ticket_id}-{order_id}-{remaining}",
         )
         if retry["ok"]:
-            return (
-                f"You asked for {fmt_cents(asked)} for {order_id}, but {fmt_cents(prior)} was already refunded, "
-                f"so I've refunded the remaining {fmt_cents(remaining)}."
-            )
+            if prior:
+                return (
+                    f"I've refunded the remaining {fmt_cents(remaining)} for {order_id}: "
+                    f"{fmt_cents(prior)} was already refunded."
+                )
+            return f"I've refunded {fmt_cents(remaining)} for {order_id}."
         return f"I could not refund {order_id}: {retry['code']}."
 
     if result["ok"]:

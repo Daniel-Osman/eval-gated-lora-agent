@@ -73,7 +73,7 @@ Rules that follow from the table:
 
 - **200+ locked cases**, frozen by content hash **before any training data is
   generated**.
-- Today: 67 cases (42 normal, 25 adversarial; 40 original + 27 paraphrase) plus
+- Today: 284 cases (134 normal, 150 adversarial; 205 bank + 79 paraphrase) plus
   a 32-case reviewer holdout. Both are frozen and both digests are pinned in
   `bench/FROZEN.json`.
 - Growing 67 to 200+ is stage 2 work, and the freeze runs before the first
@@ -115,7 +115,7 @@ work, and the stub's text is corrected in that change.
 
 ## 6. Stages
 
-1. **Harness — done.** 128 tests OK; 67 cases and the 32-case holdout frozen;
+1. **Harness - done.** 171 tests OK; 284 cases and the 32-case holdout frozen;
    composed mode shipped; free-text limit measured at 12/32.
 2. **Teacher data.** Grow the benchmark to 200+ and freeze it. Then seeds,
    sessions, validators, leak check.

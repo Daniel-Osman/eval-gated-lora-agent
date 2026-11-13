@@ -21,7 +21,7 @@ class RefereeTests(unittest.TestCase):
         second = snapshot(self.conn)
         self.assertEqual(first, second)
         self.assertNotIn("created_at", first["orders"][0])
-        self.assertEqual(len(first["orders"]), 12)
+        self.assertEqual(len(first["orders"]), 60)
 
     def test_diff_detects_change(self) -> None:
         before = snapshot(self.conn)

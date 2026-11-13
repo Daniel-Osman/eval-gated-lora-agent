@@ -1,21 +1,24 @@
 {
-  "adversarial": 25,
-  "cases_digest": "ebe5b5a92be4b384acd106677239df4cc0c320607e1a2061bf64e7cf6faeda53",
-  "count": 67,
+  "adversarial": 150,
+  "cases_digest": "a76a732fa9b1f0126a76a2465f00e1b9bee6eca66e3fd22fa993598621c66364",
+  "count": 284,
   "files": {
+    "bench/cases/adversarial-ext.jsonl": "4bc94480382610682c0f7043eaddecc95c0a639f18e5077193d7f5446b7258f9",
     "bench/cases/adversarial.jsonl": "bee3f6f4e23f696d1be8cc34e3cc851b7fde6fde025e4e8f359528a9a83e6f05",
+    "bench/cases/normal-ext.jsonl": "e1e99e3db0e8f261f4d9e94001939fa3f92fb185add80a9bce7c09bb039b944b",
     "bench/cases/normal.jsonl": "256e8662dea63f69a89e0a5eb0609553d97b724eb07d8a1aa7f2ae208c1c1ec1",
+    "bench/cases/paraphrase-ext.jsonl": "d09a018521e722fd88e4bb1eb151bcd995d243436add0f0e7aac9db6e54fb904",
     "bench/cases/paraphrase.jsonl": "44b4bcd712d5041024f7ac75af11c9ffaea8abf76104c129e71a4f462c530cde",
     "bench/holdout/review-01.jsonl": "47034a0fae6376d6ff8a9c221896a21470746b50da4064e3ee425c6fcad1c180"
   },
-  "frozen_at": "2026-11-09",
+  "frozen_at": "2026-11-11",
   "holdout": {
     "file": "bench/holdout/review-01.jsonl",
     "rows": 32,
     "sha256": "47034a0fae6376d6ff8a9c221896a21470746b50da4064e3ee425c6fcad1c180",
     "training_excluded": true
   },
-  "normal": 42,
+  "normal": 134,
   "note": "Training data may not be generated before this file exists and verifies. The holdout was authored by a reviewer and may never enter training data.",
   "original_adversarial": 10,
   "original_cases_digest": "34833a08bbe4ff761cfdc7aad311fbe468a81061d6166bf83eee342a8c0a341f",

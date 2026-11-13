@@ -26,7 +26,7 @@ import json
 from datetime import date
 from pathlib import Path
 
-from .bench import ALL_CASE_FILES, HOLDOUT_REL, ROOT
+from .bench import ALL_CASE_FILES, HOLDOUT_FILE, HOLDOUT_FILES, HOLDOUT_REL, ROOT
 
 FROZEN_NAME = "FROZEN.json"
 ORIGINAL_CASES_DIGEST = "34833a08bbe4ff761cfdc7aad311fbe468a81061d6166bf83eee342a8c0a341f"
@@ -38,21 +38,32 @@ def canonical_digest(cases: list[dict]) -> str:
 
 
 def file_digests(root: Path | None = None) -> dict[str, str]:
-    """SHA-256 of every frozen benchmark file, case files and the holdout."""
+    """SHA-256 of every frozen benchmark file, case files and the holdouts.
+
+    Growth files are optional: one that has not been authored yet is skipped, so
+    the digests stay put until the deliberate re-freeze that adds cases. The
+    gated holdout is required; a second independent holdout is hashed when it
+    exists.
+    """
     base = root or ROOT
     digests: dict[str, str] = {}
     for name in ALL_CASE_FILES:
         path = base / "bench" / "cases" / name
+        if not path.exists():
+            continue
         digests[f"bench/cases/{name}"] = hashlib.sha256(path.read_bytes()).hexdigest()
-    holdout = base / "bench" / "holdout" / Path(HOLDOUT_REL).name
-    if not holdout.exists():
-        raise FileNotFoundError(f"missing holdout file: {holdout}")
-    digests[HOLDOUT_REL] = hashlib.sha256(holdout.read_bytes()).hexdigest()
+    for name in HOLDOUT_FILES:
+        holdout = base / "bench" / "holdout" / name
+        if not holdout.exists():
+            if name == HOLDOUT_FILE:
+                raise FileNotFoundError(f"missing holdout file: {holdout}")
+            continue
+        digests[f"bench/holdout/{name}"] = hashlib.sha256(holdout.read_bytes()).hexdigest()
     return digests
 
 
 def write(root: Path | None = None) -> dict:
-    from .bench import load_all_cases, load_cases, load_holdout
+    from .bench import load_all_cases, load_cases, load_holdout, load_holdout_file
 
     base = root or ROOT
     originals = load_cases(base)
@@ -79,6 +90,14 @@ def write(root: Path | None = None) -> dict:
         "frozen_at": date.today().isoformat(),
         "note": "Training data may not be generated before this file exists and verifies. The holdout was authored by a reviewer and may never enter training data.",
     }
+    if "bench/holdout/review-02.jsonl" in files:
+        rows = load_holdout_file("review-02.jsonl", base)
+        record["holdout_2"] = {
+            "file": "bench/holdout/review-02.jsonl",
+            "sha256": files["bench/holdout/review-02.jsonl"],
+            "rows": len(rows),
+            "training_excluded": True,
+        }
     path = base / "bench" / FROZEN_NAME
     path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     return record

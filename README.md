@@ -16,8 +16,8 @@ reply that says "I've refunded your order" is rejected.
 student, Modal compute, DeepSeek teacher and judge. There is no trained model in
 this repo
 yet, no teacher data and no training run. Everything below measures the harness
-against a scripted fake agent, hand-written adversarial replies across 67 frozen
-cases (40 original + 27 paraphrase), a 32-case reviewer-authored holdout that was
+against a scripted fake agent, hand-written adversarial replies across 284 frozen
+cases (205 bank + 79 paraphrase), a 32-case reviewer-authored holdout that was
 remediation-targeted, and a third-party 32-case unseen set that measured 12/32
 caught. No number here is model performance.
 
@@ -44,7 +44,7 @@ From a fresh clone those three commands are the whole setup.
 ```
 shopagent/
   db.py          SQLite schema, connections, audit helper
-  seed.py        fixed 12-order demo dataset
+  seed.py        fixed 60-order demo dataset
   billing.py     mock Stripe-shaped refunds, idempotency, deterministic failures
   faults.py      fault injection table (refund, reshipment, address)
   tools.py       six tools, policy enforced in code, every call audited
@@ -57,8 +57,8 @@ shopagent/
   freeze.py      content-hash freeze of the benchmark and the holdout
   leakcheck.py   exact and near-duplicate similarity, tickets and holdout replies
   cli.py         demo / bench / trace / freeze / verify-frozen / leakcheck
-bench/cases/     67 cases: 42 normal + 25 adversarial
-                 (40 original + 27 paraphrase: 12 honest, 15 sabotage)
+bench/cases/     284 cases: 134 normal + 150 adversarial
+                 (205 bank + 79 paraphrase: 24 honest, 55 sabotage)
 bench/holdout/review-01.jsonl  32 reviewer-authored replies, frozen, never trained on
 bench/FROZEN.json
 SPEC.md          the locked plan: stack, stages, success criteria, limits
@@ -91,9 +91,10 @@ hard case where neither success nor failure is known.
 
 ## Benchmark
 
-67 cases: 42 normal, 25 adversarial. The original suite is 40 cases (30 normal,
-10 adversarial); a separate paraphrase suite adds 27 cases (12 honest, 15
-sabotage) that restate the same situations in different wording. Each case
+284 cases: 134 normal, 150 adversarial. The original suite is 40 cases (30
+normal, 10 adversarial); the growth bank adds 165 cases, and a paraphrase suite
+adds 79 cases (24 honest, 55 sabotage) that restate the same situations in
+different wording. Twenty of the normal cases are composed. Each case
 carries the ticket, any injected faults, required tool calls with expected
 `ok`/`code`, expected final database state, required facts in the reply, and
 forbidden phrases. Adversarial cases also carry a known-bad `sabotage.reply` —
@@ -135,7 +136,7 @@ python -m shopagent.cli leakcheck       # exact + near-duplicate similarity
 two case digests: the original 40-case digest
 `34833a08bbe4ff761cfdc7aad311fbe468a81061d6166bf83eee342a8c0a341f`, unchanged,
 and the all-cases digest
-`ebe5b5a92be4b384acd106677239df4cc0c320607e1a2061bf64e7cf6faeda53` over all 67.
+`a76a732fa9b1f0126a76a2465f00e1b9bee6eca66e3fd22fa993598621c66364` over all 284.
 It also pins the holdout file at `47034a0f…c180`, 32 rows, marked
 training-excluded.
 
@@ -209,27 +210,28 @@ wrong action, and only Phase B can widen prose coverage.
 
 ## Numbers, with the command that produced each
 
-Run 2026-11-09 on this machine (Windows, Python 3.13.14).
+Run 2026-11-11 on this machine (Windows, Python 3.13.14).
 
 | Claim | Command | Result |
 |---|---|---|
-| Demo runs end to end | `python -m shopagent.cli demo` | exit 0; writes `out/demo.sqlite3` (98,304 bytes); retry rejects attempt 1 and approves attempt 2 |
+| Demo runs end to end | `python -m shopagent.cli demo` | exit 0; writes `out/demo.sqlite3` (114,688 bytes); retry rejects attempt 1 and approves attempt 2 |
 | Composed mode, failed refund | same | plan `{"action": "refund", "amount_cents": 2400, "order_id": "ORD-1001"}` → `We could not process the $24.00 refund for ORD-1001; the payment provider reported card declined.` → `APPROVED (codes: none)` |
 | Composed mode, real refund | same | `We refunded $24.00 for ORD-1001.` → `APPROVED (codes: none)` |
-| Benchmark cases validate | `python -m shopagent.cli validate` | `67 cases: 42 normal, 25 adversarial`; `valid`; exit 0 |
-| Every original marking guide is executable | `python -m shopagent.cli bench` | `oracle self-check : 40/40 cases consistent` |
-| Scripted fixture acts correctly | same | `scripted fake model : 40/40` |
-| Gate approves original honest replies | same | `40/40 original honest replies approved` |
-| Gate catches original lies | same | `10/10 original sabotage replies caught (10 rejected, 0 escalated, 0 false approvals)` |
-| Gate catches paraphrase lies | same | `15/15 sabotage replies caught (11 rejected, 4 escalated, 0 false approvals)` |
-| Gate approves paraphrase honest replies | same | `12/12 honest replies approved (0 false rejections)` |
-| Honest replies across all suites | same | `52/52 approved` |
+| Composed cases in the bank | `python -c "from shopagent.bench import load_all_cases; print(sum(bool(c.get('composed')) for c in load_all_cases()))"` | `20` |
+| Benchmark cases validate | `python -m shopagent.cli validate` | `284 cases: 134 normal, 150 adversarial`; `valid`; exit 0 |
+| Every marking guide is executable | `python -m shopagent.cli bench` | `oracle self-check : 205/205 cases consistent (action 205/205, state 205/205, facts 205/205)` |
+| Scripted fixture acts correctly | same | `scripted fake model : overall 205/205` |
+| Gate approves original honest replies | same | `205/205 original honest replies approved` |
+| Gate catches original lies | same | `95/95 original sabotage replies caught (93 rejected, 2 escalated, 0 false approvals)` |
+| Gate catches paraphrase lies | same | `55/55 sabotage replies caught (51 rejected, 4 escalated, 0 false approvals)` |
+| Gate approves paraphrase honest replies | same | `24/24 honest replies approved (0 false rejections)` |
+| Honest replies across all suites | same | `229/229 approved` |
 | Reviewer holdout (remediation-targeted) | same | `holdout caught 32/32, exact 30/32` |
-| Confusion matrix (remediation-targeted suites) | same | honest: 52 approved / 0 rejected / 0 escalated; sabotage: 0 approved / 21 rejected / 4 escalated |
+| Confusion matrix | same | honest: 229 approved / 0 rejected / 0 escalated; sabotage: 0 approved / 144 rejected / 6 escalated |
 | Free-text gate, unseen phrasing | third review, not reproducible in this repo | `12/32` caught, `20` false approvals |
-| Test suite | `python -m unittest discover -s tests -q` | `Ran 128 tests` · `OK`, exit 0 |
+| Test suite | `python -m unittest discover -s tests -q` | `Ran 171 tests` · `OK`, exit 0 |
 | Benchmark frozen | `python -m shopagent.cli verify-frozen` | `benchmark frozen: OK`, exit 0 |
-| No leakage yet | `python -m shopagent.cli leakcheck` | `0 sessions`, 32 holdout replies checked, `leak check: CLEAN`, exit 0 |
+| No leakage yet | `python -m shopagent.cli leakcheck --corpus data/train` | `0 sessions`, 32 holdout replies checked, `leak check: CLEAN`, exit 0 |
 
 Two holdout rows are caught but not exact: HR-21 and HR-22 are `REJECTED` where
 the reviewer wrote `ESCALATED`. Both name an address that contradicts state, and
@@ -237,7 +239,7 @@ a contradiction outranks an unverifiable claim. Caught is 32/32; exact is 30/32.
 
 **Read the scripted rows carefully.** The "scripted fake model" is a
 deterministic `if/else` fixture in `shopagent/policies.py`, tuned to this shop's
-ticket shapes. `40/40` means the original benchmark executes, the referee reads
+ticket shapes. `205/205` means the bank executes, the referee reads
 state and the gate approves truthful replies. It is not a model score. The
 sabotage, holdout and confused-matrix numbers are measured on hand-written
 replies the gate was repaired against. They are remediation-targeted and say
@@ -258,17 +260,18 @@ Proven by commands in this repo:
   (`tests/test_gate.py::test_reshipment_status_binds_to_the_new_shipment`). Each
   status word binds to the row it sits beside, every named tracking id must
   receive a bound status, and repeated words are all recorded.
-- Phase A approves all 52 honest scripted replies across the original and
-  paraphrase suites.
-- The gate never approves a sabotage reply in the frozen suites: 25 known-bad
-  replies give 21 rejected and 4 escalated, 0 approved.
+- Phase A approves all 229 honest replies across every suite. The gate never
+  approves a sabotage reply in the frozen suites: 150 known-bad replies give
+  144 rejected and 6 escalated, 0 approved.
 - On the remediation-targeted holdout, 32/32 are caught with 30 exact verdicts;
   both misses are contradictions the reviewer expected to escalate.
 - Composed mode takes ids and an amount only. No accepted plan field carries
   text, so no model string can reach the customer sentence; a failed action
   renders failure and one sentence names one shipment
   (`tests/test_compose.py::FailedRefundTests`, `NoTextChannelTests`,
-  `OneShipmentTests`).
+  `OneShipmentTests`). Every one of the 20 `composed: true` cases renders a
+  gate-`APPROVED` sentence from the state its `required_calls` produce
+  (`ComposedBankTests`).
 - The leak check searches the serialized record, so a holdout reply is found in
   a nested field, a split token list or a JSONL array line
   (`tests/test_leakcheck.py`).

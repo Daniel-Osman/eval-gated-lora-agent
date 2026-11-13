@@ -309,9 +309,13 @@ class ToolKit:
                 {"order_id": order_id, "error": {"code": spec["failure_code"], "message": spec["message"]}},
             )
 
-        count = int(scalar(self.conn, "SELECT COUNT(*) FROM shipments") or 0)
-        shipment_id = f"SHP-{2000 + count}"
-        tracking = f"TRK{2000 + count}"
+        # Tool-created shipments own the 2010+ series. Count only that series:
+        # seeded shipments live in the 1000 series and must not shift the first
+        # id a frozen case expects (SHP-2010). Counting every row made the
+        # allocator depend on dataset size, so extending the seed broke old cases.
+        created = int(scalar(self.conn, "SELECT COUNT(*) FROM shipments WHERE id >= 'SHP-2010'") or 0)
+        shipment_id = f"SHP-{2010 + created}"
+        tracking = f"TRK{2010 + created}"
         target_address = address_id or order["shipping_address_id"]
         insert(
             self.conn,

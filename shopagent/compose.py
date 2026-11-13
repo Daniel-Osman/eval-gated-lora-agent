@@ -21,7 +21,7 @@ import re
 import sqlite3
 
 from .db import one
-from .tools import ToolKit
+from .tools import ORDER_STATUS_TEXT, ToolKit
 
 ORDER_ID = re.compile(r"^ORD-\d{4}$")
 ADDRESS_ID = re.compile(r"^ADR-\d{4}$")
@@ -33,6 +33,7 @@ PLAN_KEYS = {
     "refund": frozenset({"action", "order_id", "amount_cents"}),
     "reshipment": frozenset({"action", "order_id", "shipment_id"}),
     "address": frozenset({"action", "address_id"}),
+    "status": frozenset({"action", "order_id"}),
 }
 
 
@@ -50,7 +51,9 @@ def _check_plan(plan: dict) -> str:
     action = plan.get("action")
     allowed = PLAN_KEYS.get(action) if isinstance(action, str) else None
     if allowed is None:
-        raise ComposeError(f"unknown action {action!r}; composed mode renders refund, reshipment or address")
+        raise ComposeError(
+            f"unknown action {action!r}; composed mode renders status, refund, reshipment or address"
+        )
     unknown = sorted(set(plan) - allowed)
     if unknown:
         raise ComposeError(f"plan carries non-evidence keys {unknown}; composed mode takes ids and amounts, never text")
@@ -88,22 +91,23 @@ def _shipment_id(plan: dict) -> str | None:
     return value.upper()
 
 
-def _compose_refund(conn: sqlite3.Connection, ticket_id: str, plan: dict) -> str:
-    order_id = _order_id(plan)
-    amount = plan.get("amount_cents")
-    if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
-        raise ComposeError(f"amount_cents must be a positive integer, got {amount!r}")
-    result = ToolKit(conn, ticket_id=ticket_id).call("refund_order", order_id=order_id, amount_cents=amount)
+def render_refund(conn: sqlite3.Connection, result: dict) -> str:
+    """Render a refund sentence from the tool envelope, never from a plan.
+
+    The row id comes from the result the action just returned. A plan cannot
+    name a refund row, so this function cannot be handed one.
+    """
     refund = result["data"].get("refund")
     if not isinstance(refund, dict) or not refund.get("id"):
         # The tool refused before writing a refund row (unpaid order, unknown
         # order, amount over the remainder). Say only that no refund happened.
+        order_id = result["data"].get("order_id") or (result["data"].get("order") or {}).get("id")
         order = one(conn, "SELECT * FROM orders WHERE id = ?", (order_id,))
         if order is None:
             raise ComposeError(f"order {order_id} is not in the database")
         return f"We could not process a refund for {order['id']}."
     row = one(conn, "SELECT * FROM refunds WHERE id = ?", (refund["id"],))
-    if row is None:  # pragma: no cover - the tool always writes the row it returns
+    if row is None:
         raise ComposeError(f"refund {refund['id']} is not in the database")
     status = row["status"]
     shown = _money(row["amount_cents"])
@@ -126,20 +130,19 @@ def _compose_refund(conn: sqlite3.Connection, ticket_id: str, plan: dict) -> str
     raise ComposeError(f"refund status {status!r} has no composed sentence")
 
 
-def _compose_reshipment(conn: sqlite3.Connection, ticket_id: str, plan: dict) -> str:
-    order_id = _order_id(plan)
-    wanted = _shipment_id(plan)
-    result = ToolKit(conn, ticket_id=ticket_id).call("create_reshipment", order_id=order_id)
+def render_reshipment(conn: sqlite3.Connection, result: dict, wanted: str | None = None) -> str:
+    """Render a reshipment sentence from the shipment row the tool wrote."""
     shipment = result["data"].get("shipment")
     if not isinstance(shipment, dict) or not shipment.get("id"):
         # Nothing was written; name the order only after reading it back.
+        order_id = result["data"].get("order_id") or (result["data"].get("order") or {}).get("id")
         order = one(conn, "SELECT * FROM orders WHERE id = ?", (order_id,))
         if order is None:
             raise ComposeError(f"order {order_id} is not in the database")
         code = str(result.get("code") or "a failure").replace("_", " ")
         return f"No new shipment was created for {order['id']}; the carrier reported {code}."
     row = one(conn, "SELECT * FROM shipments WHERE id = ?", (shipment["id"],))
-    if row is None:  # pragma: no cover - the tool always writes the row it returns
+    if row is None:
         raise ComposeError(f"shipment {shipment['id']} is not in the database")
     # One sentence names one shipment. If the plan named one, it must be this
     # row: the sentence describes the shipment the action wrote, nothing else.
@@ -167,18 +170,83 @@ def _compose_reshipment(conn: sqlite3.Connection, ticket_id: str, plan: dict) ->
     )
 
 
-def _compose_address(conn: sqlite3.Connection, ticket_id: str, plan: dict) -> str:
-    address_id = _address_id(plan)
+def render_address(conn: sqlite3.Connection, address_id: str) -> str:
+    """Confirm a stored address, or state the lock that forbids changing it.
+
+    There is no text in the plan and no write here: the sentence confirms the
+    stored row, so not one character of it can come from the model. When an
+    order using the address has already shipped, the same check the tool makes
+    turns the sentence into a refusal.
+    """
     row = one(conn, "SELECT * FROM addresses WHERE id = ?", (address_id,))
     if row is None:
         raise ComposeError(f"address {address_id} is not in the database")
-    # There is no text in the plan and no write here: the sentence confirms the
-    # stored row, so not one character of it can come from the model.
+    locked = one(
+        conn,
+        "SELECT o.id FROM orders o JOIN shipments s ON s.order_id = o.id"
+        " WHERE o.shipping_address_id = ? AND s.status IN ('in_transit','delivered') LIMIT 1",
+        (address_id,),
+    )
+    if locked is not None:
+        return f"I could not update the address for {locked['id']}: the order has already shipped or been delivered."
     place = ", ".join(part for part in (row["line1"], row["city"], row["postcode"]) if part)
     return f"The delivery address {row['id']} is {place}."
 
 
+def render_status(conn: sqlite3.Connection, order_id: str) -> str:
+    """State the order status and the latest shipment, both read from rows."""
+    order = one(conn, "SELECT * FROM orders WHERE id = ?", (order_id,))
+    if order is None:
+        raise ComposeError(f"order {order_id} is not in the database")
+    head = f"{order['id']} is {ORDER_STATUS_TEXT.get(order['status'], order['status'].replace('_', ' '))}"
+    shipment = one(
+        conn,
+        "SELECT * FROM shipments WHERE order_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (order["id"],),
+    )
+    if shipment is None:
+        return f"{head}; no shipment has been created yet."
+    tracking = shipment["tracking_number"] or "not assigned"
+    status = shipment["status"]
+    if status == "label_created":
+        tail = f"the latest shipment is {tracking}, label created"
+    elif status == "in_transit":
+        tail = f"the latest shipment is {tracking} and it is in transit"
+    elif status == "delivered":
+        tail = f"the latest shipment is {tracking} and it was delivered"
+    elif status == "returned":
+        tail = f"the latest shipment is {tracking} and it was returned"
+    else:
+        tail = f"the latest shipment is {tracking}, status {str(status).replace('_', ' ')}"
+    return f"{head}; {tail}."
+
+
+def _compose_refund(conn: sqlite3.Connection, ticket_id: str, plan: dict) -> str:
+    order_id = _order_id(plan)
+    amount = plan.get("amount_cents")
+    if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+        raise ComposeError(f"amount_cents must be a positive integer, got {amount!r}")
+    result = ToolKit(conn, ticket_id=ticket_id).call("refund_order", order_id=order_id, amount_cents=amount)
+    return render_refund(conn, result)
+
+
+def _compose_reshipment(conn: sqlite3.Connection, ticket_id: str, plan: dict) -> str:
+    order_id = _order_id(plan)
+    wanted = _shipment_id(plan)
+    result = ToolKit(conn, ticket_id=ticket_id).call("create_reshipment", order_id=order_id)
+    return render_reshipment(conn, result, wanted)
+
+
+def _compose_address(conn: sqlite3.Connection, ticket_id: str, plan: dict) -> str:
+    return render_address(conn, _address_id(plan))
+
+
+def _compose_status(conn: sqlite3.Connection, ticket_id: str, plan: dict) -> str:
+    return render_status(conn, _order_id(plan))
+
+
 _COMPOSERS = {
+    "status": _compose_status,
     "refund": _compose_refund,
     "reshipment": _compose_reshipment,
     "address": _compose_address,

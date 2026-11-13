@@ -186,6 +186,17 @@ class GatePhaseATests(unittest.TestCase):
         self.assertIn("ADDRESS_VALUE_MISMATCH", decision.codes)
         self.assertIn("UNVERIFIED_CLAIM", decision.codes)
 
+    def test_cancelled_order_refund_refusal_is_approved(self) -> None:
+        baseline = snapshot(self.conn)
+        self.tk.call("refund_order", order_id="ORD-1059", amount_cents=2100)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="I could not refund ORD-1059: the order is cancelled and no payment has been captured.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
     def test_empty_reply_is_rejected(self) -> None:
         decision = evaluate(self.conn, ticket_id="G-1", reply="  ", baseline=snapshot(self.conn))
         self.assertEqual(decision.codes, ["NO_REPLY"])
@@ -214,6 +225,259 @@ class GatePhaseATests(unittest.TestCase):
         self.assertIn("STATE_INVARIANT_VIOLATION", decision.codes)
 
 
+class LineItemPriceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = fresh()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_true_line_item_price_is_a_bound_amount(self) -> None:
+        # ORD-1005: 2 x Wool blanket at $37.00 each, $74.00 total. A status
+        # reply that lists the line item names a real row's price.
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="Order ORD-1005 is partially refunded. Items: 2 x Wool blanket ($37.00).",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
+    def test_wrong_line_item_price_is_rejected(self) -> None:
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="Order ORD-1005 is partially refunded. Items: 2 x Wool blanket ($38.00).",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "REJECTED", decision.reasons)
+        self.assertIn("AMOUNT_UNBOUND", decision.codes)
+
+
+class NegatedShipmentStatusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = fresh()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_negated_status_on_an_unshipped_order_is_approved(self) -> None:
+        # ORD-1004 is pending payment and has no shipment row.
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="ORD-1004 has not shipped yet, so there is no shipment to replace.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
+    def test_negated_status_on_a_shipped_order_is_rejected(self) -> None:
+        # ORD-1001 is in transit; "has not shipped" is false there.
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="ORD-1001 has not shipped yet.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "REJECTED", decision.reasons)
+        self.assertIn("SHIPMENT_STATUS_UNSUPPORTED", decision.codes)
+
+    def test_negated_delivery_on_an_in_transit_order_is_approved(self) -> None:
+        # ORD-1001 is in transit: "has not been delivered" is true.
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="ORD-1001 has not been delivered yet.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
+    def test_negated_delivery_on_a_delivered_order_is_rejected(self) -> None:
+        # ORD-1010 is delivered: the negated predicate is false.
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="ORD-1010 has not been delivered yet.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "REJECTED", decision.reasons)
+        self.assertIn("SHIPMENT_STATUS_UNSUPPORTED", decision.codes)
+
+    def test_negated_return_on_a_returned_order_is_rejected(self) -> None:
+        # ORD-1011 is returned: "has not been returned" is false.
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="ORD-1011 has not been returned.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "REJECTED", decision.reasons)
+        self.assertIn("SHIPMENT_STATUS_UNSUPPORTED", decision.codes)
+
+    def test_negated_return_on_a_delivered_order_is_approved(self) -> None:
+        # ORD-1007 is delivered and not returned: the negation holds.
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="ORD-1007 has not been returned.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
+    def test_shipment_named_in_its_own_clause_binds_its_own_order(self) -> None:
+        # The status clause names SHP-1011 and no order: it must bind ORD-1011,
+        # the order that parcel belongs to, not the order named a sentence ago.
+        baseline = snapshot(self.conn)
+        decision = evaluate(
+            self.conn,
+            ticket_id="G-1",
+            reply="ORD-1007 was delivered. Shipment: SHP-1011 returned, tracking TRK1011.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
+
+class CompletionFillerTests(unittest.TestCase):
+    """A completion adjective inside a typed claim is that claim's predicate.
+
+    "Your refund is complete" names the refund the clause already states; it is
+    not a second, untyped action. The typed claim still binds to state, so the
+    filler buys no approval the action did not earn.
+    """
+
+    def setUp(self) -> None:
+        self.conn = fresh()
+        self.tk = ToolKit(self.conn, ticket_id="F-1")
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_true_refund_with_completion_filler_is_approved(self) -> None:
+        baseline = snapshot(self.conn)
+        self.tk.call("refund_order", order_id="ORD-1014", amount_cents=12875)
+        decision = evaluate(
+            self.conn,
+            ticket_id="F-1",
+            reply="I've refunded $128.75 for ORD-1014. Your refund is complete.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
+    def test_settled_refund_with_completion_filler_is_approved(self) -> None:
+        # The refund predates this run: the status clause binds to the row.
+        decision = evaluate(
+            self.conn,
+            ticket_id="F-1",
+            reply="ORD-1045 is refunded and the refund is complete.",
+            baseline=snapshot(self.conn),
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
+    def test_failed_refund_with_completion_filler_is_rejected(self) -> None:
+        from shopagent.faults import inject
+
+        inject(self.conn, "refund", "ORD-1014", "card_declined", times=1)
+        baseline = snapshot(self.conn)
+        self.tk.call("refund_order", order_id="ORD-1014", amount_cents=12875)
+        decision = evaluate(
+            self.conn,
+            ticket_id="F-1",
+            reply="I've refunded $128.75 for ORD-1014. Your refund is complete.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "REJECTED")
+        self.assertIn("REFUND_CLAIM_UNSUPPORTED", decision.codes)
+
+    def test_standalone_completion_phrase_still_escalates(self) -> None:
+        # No typed action in the clause: the cue stands alone and a human looks.
+        for reply in ("It's all set.", "We have taken care of it for ORD-1001."):
+            decision = evaluate(
+                self.conn, ticket_id="F-1", reply=reply, baseline=snapshot(self.conn)
+            )
+            self.assertEqual(decision.verdict, "ESCALATED", reply)
+            self.assertIn("UNVERIFIED_CLAIM", decision.codes)
+
+    def test_unrelated_action_after_a_typed_claim_still_escalates(self) -> None:
+        # Only a completion filler about the typed action may be dropped. An
+        # unrelated generic action in the same clause is still a claim.
+        baseline = snapshot(self.conn)
+        self.tk.call("refund_order", order_id="ORD-1001", amount_cents=2400)
+        for reply in (
+            "We refunded $24.00 for ORD-1001 and resolved your billing dispute.",
+            "We refunded $24.00 for ORD-1001 and closed the ticket.",
+            "We refunded $24.00 for ORD-1001 and cancelled your subscription.",
+        ):
+            decision = evaluate(self.conn, ticket_id="F-1", reply=reply, baseline=baseline)
+            self.assertEqual(decision.verdict, "ESCALATED", reply)
+            self.assertIn("UNVERIFIED_CLAIM", decision.codes, reply)
+
+    def test_bare_completion_filler_after_a_typed_claim_is_dropped(self) -> None:
+        # "it is now complete" has no object of its own: it is the refund's
+        # predicate, and the refund claim is still bound to state.
+        baseline = snapshot(self.conn)
+        self.tk.call("refund_order", order_id="ORD-1001", amount_cents=2400)
+        decision = evaluate(
+            self.conn,
+            ticket_id="F-1",
+            reply="We refunded $24.00 for ORD-1001 and it is now complete.",
+            baseline=baseline,
+        )
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
+
+
+class UnverifiedActionTests(unittest.TestCase):
+    """A handoff the state cannot record must not ride on a true refund.
+
+    Nothing in the shop records "passed to a manager" or "noted". Each such
+    action is an untyped claim and escalates, exactly like "resolved your
+    billing dispute".
+    """
+
+    def setUp(self) -> None:
+        self.conn = fresh()
+        self.tk = ToolKit(self.conn, ticket_id="U-1")
+        self.baseline = snapshot(self.conn)
+        self.tk.call("refund_order", order_id="ORD-1001", amount_cents=2400)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def _assert_escalates(self, tails: tuple[str, ...]) -> None:
+        for tail in tails:
+            reply = f"We refunded $24.00 for ORD-1001 and {tail}."
+            decision = evaluate(
+                self.conn, ticket_id="U-1", reply=reply, baseline=self.baseline
+            )
+            self.assertEqual(decision.verdict, "ESCALATED", reply)
+            self.assertIn("UNVERIFIED_CLAIM", decision.codes, reply)
+
+    def test_passed_to_someone_is_unverified(self) -> None:
+        self._assert_escalates(("passed this to our manager", "passed it on"))
+
+    def test_escalated_is_unverified(self) -> None:
+        self._assert_escalates(("escalated your case", "escalated this to a manager"))
+
+    def test_noted_is_unverified(self) -> None:
+        self._assert_escalates(("noted your case", "noted it in the file"))
+
+    def test_flagged_is_unverified(self) -> None:
+        self._assert_escalates(("flagged this for review", "flagged your account"))
+
+    def test_forwarded_is_unverified(self) -> None:
+        self._assert_escalates(("forwarded this to billing", "forwarded it to the team"))
+
+    def test_filed_is_unverified(self) -> None:
+        self._assert_escalates(("filed a report", "filed this with the carrier"))
+
+
 class ClaimBindingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = fresh()
@@ -221,6 +485,24 @@ class ClaimBindingTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
+
+    def test_refund_record_binds_to_its_own_order_after_an_address_line(self) -> None:
+        baseline = snapshot(self.conn)
+        self.tk.call("update_address", address_id="ADR-2044", line1="9 Ash Lane", city="Tripoli")
+        self.tk.call("refund_order", order_id="ORD-1027", amount_cents=5000)
+        decision = evaluate(
+            self.conn,
+            ticket_id="B-1",
+            reply=(
+                "The delivery address for ORD-1056 has been updated to 9 Ash Lane, Tripoli. "
+                "I've refunded $50.00 for ORD-1027. Refund REF-1014 is succeeded. "
+                "The order is now partially refunded."
+            ),
+            baseline=baseline,
+        )
+        # "Refund REF-1014 is succeeded" names no order; the record's own order
+        # decides, not the first order id in the reply (ORD-1056).
+        self.assertEqual(decision.verdict, "APPROVED", decision.reasons)
 
     def test_wrong_entity_refund_is_rejected(self) -> None:
         baseline = snapshot(self.conn)

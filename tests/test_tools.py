@@ -23,9 +23,9 @@ class ToolTests(unittest.TestCase):
         return rows(self.conn, "SELECT * FROM refunds WHERE order_id = ? ORDER BY id", (order_id,))
 
     def test_seed_is_fixed(self) -> None:
-        self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM orders"), 12)
-        self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM refunds"), 3)
-        self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM shipments"), 10)
+        self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM orders"), 60)
+        self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM refunds"), 13)
+        self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM shipments"), 52)
 
     def test_refund_success_updates_order_and_audits(self) -> None:
         result = self.tk.call("refund_order", order_id="ORD-1001", amount_cents=2400)
