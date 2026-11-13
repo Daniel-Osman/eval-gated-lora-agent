@@ -1,26 +1,32 @@
 # NOW - eval-gated-lora-agent
 
-Status: benchmark grown and frozen — 284 cases (134 normal, 150 adversarial),
-20 composed; 171 tests OK; gates green. `SPEC.md` holds Daniel's locked stack:
-Qwen3.8-27B 4-bit QLoRA (Unsloth) on Modal A100 40 GB, Modal vLLM on an A10,
-$30 Modal credit; teacher and judge call `opencode-go/deepseek-v4.1-flash`.
-Composed mode renders status, refund, reshipment and address from ids only;
-address is confirm-or-refuse and cannot originate a change. Free-text limit
-unchanged: 12/32 caught, 20 false approvals on unseen phrasing. The 79-case
-paraphrase suite was authored with knowledge of the gate, so its 55/55 is not
-generalisation.
-Next: teacher data pipeline against the frozen 284-case bank, then Modal
-training.
-Verified 2026-11-11: `validate` 284 valid; `freeze` 284 and `verify-frozen` OK;
-bench oracle 205/205, scripted 205/205, sabotage 95/95 original + 55/55
-paraphrase, honest 229/229, holdout 32/32 caught (30/32 exact); `unittest` 171
-OK; `leakcheck --corpus data/train` CLEAN; `git diff --check` clean. Digests:
-original 40-case `34833a08bbe4ff761cfdc7aad311fbe468a81061d6166bf83eee342a8c0a341f`;
-all-cases (284) `a76a732fa9b1f0126a76a2465f00e1b9bee6eca66e3fd22fa993598621c66364`;
-holdout `47034a0f…c180` (32 rows, training-excluded).
-Open: free-text generalisation 12/32; composed address has no text; Phase B
-judge unwired (stub re-pointed to DeepSeek in stage 4); no model trained; no
-teacher data; leak corpus empty; nothing committed; fresh-context PASS pending.
+Status: teacher corpus generated — 178 admitted traces of the frozen 284 cases
+(164 free text, 14 composed), from a full pass plus a resumed pass after a brief
+change; 106 rejects with reason codes; three shards `18ecdb3a…` / `89bacee4…` /
+`7e5f1cb0…`; manifest carries `brief_revision` 2 (runs 1, 2); 975 requests,
+1,389 s; 231 tests OK; gates green. `SPEC.md` holds Daniel's locked stack:
+Qwen3.8-27B 4-bit QLoRA (Unsloth) on Modal A100 40 GB, Modal vLLM on an A10, $30
+Modal credit; teacher and judge call `opencode-go/deepseek-v4.1-flash`.
+Next: fresh-context review of the corpus checkpoint, then a decision on the
+99-reject gate cluster, then hand-written seeds and expansion toward the 1,000+
+sessions `SPEC.md` §3 targets, then Modal training.
+Verified 2026-11-13: `teacher --out data --session-id teacher-20261113T011445Z`
+exit 0 (284 attempted, 52 admitted, 232 rejected); the same command with
+`--resume` exit 0 (232 re-run, 126 admitted; corpus 178 of 284); `validate` 284
+valid; `bench` exit 0 (holdout 1 32/32 caught, 30/32 exact; holdout 2 30/40
+caught, 16/20 honest, 43/60 exact); `unittest` 231 OK; `leakcheck --corpus
+data/train` 178 sessions, 92 holdout replies, CLEAN, closest pair `N-79 ~
+shard-000.jsonl:63` (0.75). Digests: shards `18ecdb3a…`, `89bacee4…`,
+`7e5f1cb0…`; cases `a76a732f…c66364`; template `68464655…7070f5`; holdout
+`47034a0f…c180`.
+Open: 71 `gate:REJECTED` and 28 `gate:ESCALATED` are 99 of the 106 rejects —
+replies that read a pre-existing refund or shipment as a new claim. Whether that
+is a gate reading to accept, a brief to sharpen, or a Phase B job is Daniel's
+call. Also open: the corpus mixes brief revisions (52 rows rev 1, 126 rev 2);
+bench scenarios are now seen, so later bench scores are not generalisation — the
+two holdouts are the outside check; composed address has no trace; free-text
+generalisation still 12/32; Phase B judge unwired; no model trained; nothing
+committed.
 
 ## What this is
 
@@ -44,14 +50,17 @@ teacher and judge, served by Modal vLLM, inside the $30 Modal credit.
 
 ## Next
 
-1. Daniel reviews `SPEC.md`; no commit before he says go.
-2. Build the teacher pipeline; run `leakcheck` on every generated batch, against
-   both the tickets and the 32 holdout replies. Freeze the grown benchmark
-   first.
-3. Unsloth QLoRA run for Qwen3.8-27B on Modal A100 40 GB; record loss, VRAM and
+1. Fresh-context review of the teacher corpus checkpoint; no commit before
+   Daniel says go.
+2. Decide the 99-reject gate cluster (`gate:REJECTED` 71, `gate:ESCALATED` 28):
+   accept the reading, sharpen the teacher brief, or defer to Phase B.
+3. Grow the corpus: hand-written seed tasks and schema-driven expansion toward
+   the 1,000+ sessions in `SPEC.md` §3, re-running `leakcheck` on every batch.
+4. Unsloth QLoRA run for Qwen3.8-27B on Modal A100 40 GB; record loss, VRAM and
    wall time, weights cached on a Modal Volume.
-4. Gate the trained model through this same benchmark and holdout, and report
-   against base 27B, honestly.
+5. Gate the trained model through this same benchmark and holdout, and report
+   against base 27B, honestly. Bench scenarios are now seen; the two holdouts
+   are the outside check.
 
 ## Evidence
 

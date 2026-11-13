@@ -402,11 +402,11 @@ def cmd_verify_frozen(_args) -> int:
 
 
 def cmd_leakcheck(args) -> int:
-    from .bench import load_all_cases, load_holdout
+    from .bench import load_all_cases, load_all_holdouts
     from .leakcheck import check, load_corpus
 
     cases = load_all_cases()
-    holdout = load_holdout()
+    holdout = load_all_holdouts()
     corpus_dir = Path(args.corpus)
     if not corpus_dir.is_absolute():
         corpus_dir = ROOT / corpus_dir
@@ -481,6 +481,111 @@ def cmd_fault(args) -> int:
 # -- parser --------------------------------------------------------------
 
 
+def _print_trace(admission) -> None:
+    row = admission.row
+    print()
+    print("=" * 72)
+    print(f"approved trace: {row['id']}  case {admission.case_id}  path {admission.path}")
+    print("=" * 72)
+    print("BRIEF")
+    print(admission.brief)
+    print()
+    print("TEACHER PLAN")
+    print(json.dumps(row["plan"], indent=2, sort_keys=True))
+    print()
+    print("EXECUTED CALLS")
+    if not admission.results:
+        print("  (none: the plan carries ids only)")
+    for item in admission.results:
+        result = item["result"]
+        print(
+            f"  {item['tool']}({json.dumps(item['args'], sort_keys=True)}) -> "
+            f"ok={result.get('ok')} code={result.get('code')}"
+        )
+    print()
+    print("REPLY" if admission.path == "free_text" else "RENDERED REPLY")
+    print(row["reply"] or row["rendered_reply"])
+    decision = admission.decision
+    print()
+    print(f"GATE {decision.get('verdict')} codes={decision.get('codes')} phase={decision.get('phase')}")
+    print()
+    print("PROVENANCE")
+    print(json.dumps(row["provenance"], indent=2, sort_keys=True))
+
+
+def cmd_teacher(args) -> int:
+    from datetime import datetime, timezone
+
+    from .bench import load_all_cases
+    from .corpus import rejected_case_ids, run_generation
+    from .teacher import TeacherClient, TeacherUnavailable
+
+    try:
+        client = TeacherClient(
+            session_id=args.session_id
+            or f"teacher-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+        )
+    except TeacherUnavailable as exc:
+        print(str(exc))
+        return 2
+
+    cases = load_all_cases()
+    known = {case["id"]: case for case in cases}
+    out_dir = args.out or ("out/teacher-dry" if args.dry_run else "data")
+    wanted: list[str] = []
+    if args.only:
+        wanted = [part.strip() for part in args.only.split(",") if part.strip()]
+    elif args.resume:
+        wanted = [case_id for case_id in rejected_case_ids(out_dir) if case_id in known]
+        if not wanted:
+            print(f"resume: no rejects under {out_dir}; nothing to re-run")
+            return 0
+    if wanted:
+        missing = [part for part in wanted if part not in known]
+        if missing:
+            print(f"unknown case ids: {missing}")
+            return 2
+        cases = [known[part] for part in wanted]
+    if args.limit:
+        cases = cases[: args.limit]
+    if args.dry_run:
+        if args.dry_run < 1:
+            print("--dry-run needs a positive count")
+            return 2
+        step = max(1, len(cases) // args.dry_run)
+        cases = cases[::step][: args.dry_run]
+
+    out_dir = args.out or ("out/teacher-dry" if args.dry_run else "data")
+    try:
+        result = run_generation(cases, client, out_dir=out_dir, resume=args.resume)
+    except (RuntimeError, ValueError) as exc:
+        print(str(exc))
+        return 2
+
+    manifest = result.manifest
+    print(f"session: {manifest['session_id']}")
+    if manifest.get("updated_at") != manifest.get("generated_at"):
+        print(f"resumed: {len(cases)} cases at {manifest['updated_at']}")
+    print(
+        f"cases: {manifest['attempted']}  admitted: {manifest['admitted']}  "
+        f"rejected: {manifest['rejected']}  requests: {manifest['requests']}"
+    )
+    if manifest["composition"]:
+        print("composition: " + ", ".join(f"{key} {value}" for key, value in manifest["composition"].items()))
+    for reason, count in manifest["rejects_by_reason"].items():
+        print(f"  {reason}: {count}")
+    for shard in manifest["shards"]:
+        print(f"shard {shard['file']}: {shard['rows']} rows  {shard['sha256'][:16]}")
+    print(f"manifest: {result.out_dir / 'manifest.json'}")
+
+    trace = next((item for item in result.admissions if item.admitted and item.path == "free_text"), None)
+    if trace is None:
+        trace = next((item for item in result.admissions if item.admitted), None)
+    if trace is not None:
+        _print_trace(trace)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="shopagent", description="A gated store support agent.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -508,6 +613,15 @@ def build_parser() -> argparse.ArgumentParser:
     leak.add_argument("--corpus", default="data/train")
     leak.add_argument("--threshold", type=float, default=0.8)
     leak.set_defaults(func=cmd_leakcheck)
+
+    teacher = sub.add_parser("teacher", help="generate training traces from the frozen cases")
+    teacher.add_argument("--dry-run", type=int, default=0, metavar="N", help="sample N cases into out/teacher-dry")
+    teacher.add_argument("--out", default=None, help="corpus root (default data, or out/teacher-dry)")
+    teacher.add_argument("--limit", type=int, default=0, help="first N cases")
+    teacher.add_argument("--only", default="", help="comma-separated case ids")
+    teacher.add_argument("--resume", action="store_true", help="re-run the rejected cases and merge into the same corpus")
+    teacher.add_argument("--session-id", default="", help="one stable x-opencode-session id")
+    teacher.set_defaults(func=cmd_teacher)
 
     validate = sub.add_parser("validate", help="validate the benchmark case files")
     validate.set_defaults(func=cmd_validate)

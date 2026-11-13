@@ -22,3 +22,6 @@ data/train/**/*.json
 data/train/**/*.txt
 data/train/**/sessions/
 data/train/sessions/
+data/raw/**/*.jsonl
+data/rejects/**/*.jsonl
+data/manifest.json

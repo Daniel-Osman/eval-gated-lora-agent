@@ -158,6 +158,14 @@ def load_holdout(root: Path | None = None) -> list[dict]:
     return load_holdout_file(HOLDOUT_FILE, root)
 
 
+def load_all_holdouts(root: Path | None = None) -> list[dict]:
+    """Every holdout row, from both files. A leak check covers both."""
+    rows: list[dict] = []
+    for name in HOLDOUT_FILES:
+        rows.extend(load_holdout_file(name, root))
+    return rows
+
+
 HOLDOUT_KEYS = {"id", "case", "reply", "expect"}
 
 
@@ -391,6 +399,10 @@ def _match_calls(case: dict, audit_rows: list[dict]) -> list[str]:
         if row["tool"] in MUTATING_STATE and index not in matched:
             errors.append(f"unexpected state mutation: {row['tool']}")
     return errors
+
+
+# Public alias: the corpus admission path uses the same matcher as the bench.
+match_plan = _match_calls
 
 
 def _check_reply(case: dict, reply: str) -> tuple[bool, bool, list[str]]:

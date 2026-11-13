@@ -14,12 +14,15 @@ reply that says "I've refunded your order" is rejected.
 
 **Stage: incubator, Phase 1 (harness).** `SPEC.md` holds the locked plan: 27B
 student, Modal compute, DeepSeek teacher and judge. There is no trained model in
-this repo
-yet, no teacher data and no training run. Everything below measures the harness
-against a scripted fake agent, hand-written adversarial replies across 284 frozen
-cases (205 bank + 79 paraphrase), a 32-case reviewer-authored holdout that was
-remediation-targeted, and a third-party 32-case unseen set that measured 12/32
-caught. No number here is model performance.
+this repo yet and no training run. A first teacher corpus exists: 178 admitted
+traces of 284 frozen cases, from a full pass plus a resumed pass after a brief
+change, gated, manifested and leak-checked (see below). Everything else measures
+the harness against a scripted fake agent, hand-written adversarial replies
+across 284 frozen cases (205 bank + 79 paraphrase), a 32-case reviewer-authored
+holdout that was remediation-targeted, and a third-party 32-case unseen set that
+measured 12/32 caught. No number here is model performance. Bench scores after
+this corpus are **seen-scenario** scores, not generalisation; the two holdouts
+are the outside check.
 
 ## The rule this project is built on
 
@@ -53,18 +56,25 @@ shopagent/
   judge.py       Phase B contract, validator, stub
   policies.py    deterministic honest fake agent (a fixture, not a model)
   compose.py     composed replies: sentence rendered from the row the action wrote
+  teacher.py     OpenCode Go client, prompts, briefs, parsers, status-id source
+  corpus.py      one case -> one admitted trace or one recorded reject; run, shards, manifest
   bench.py       case loading, validation, oracle, scoring, gate check, holdout
   freeze.py      content-hash freeze of the benchmark and the holdout
   leakcheck.py   exact and near-duplicate similarity, tickets and holdout replies
-  cli.py         demo / bench / trace / freeze / verify-frozen / leakcheck
+  cli.py         demo / bench / trace / freeze / verify-frozen / leakcheck / teacher
 bench/cases/     284 cases: 134 normal + 150 adversarial
                  (205 bank + 79 paraphrase: 24 honest, 55 sabotage)
 bench/holdout/review-01.jsonl  32 reviewer-authored replies, frozen, never trained on
+bench/holdout/review-02.jsonl  60 replies from a different model, scored once
 bench/FROZEN.json
 SPEC.md          the locked plan: stack, stages, success criteria, limits
 docs/GATE.md     gate contract, Phase A rules, retry semantics
 docs/BENCHMARK.md case format and benchmark discipline
-data/train/      empty; synthetic sessions will land here, never in bench/
+docs/TEACHER-DATA-PLAN.md the cleared slice plan for the teacher corpus
+data/train/      shard-NNN.jsonl: admitted traces only (gitignored, README tracked)
+data/raw/        raw.jsonl: every teacher response verbatim (gitignored)
+data/rejects/    rejected.jsonl: one row per reject with its reason (gitignored)
+data/manifest.json counts, digests, session id, template digest (gitignored)
 tests/
 ```
 
@@ -140,6 +150,83 @@ and the all-cases digest
 It also pins the holdout file at `47034a0f…c180`, 32 rows, marked
 training-excluded.
 
+## Teacher corpus
+
+The pipeline turns one frozen case into one trainable trace, or one recorded
+reject. The teacher is `deepseek-v4.1-flash` over the OpenCode Go subscription.
+
+```
+case (title, ids, amounts, fault modes, required facts)
+  -> call 1: a fresh customer message + a tool plan      (teacher never sees the bench ticket)
+  -> the plan runs against the real tool layer
+  -> free text: call 2 with the real tool outputs -> reply
+  -> composed: compose_reply renders the sentence from the row the action wrote
+  -> admit only if plan matches required_calls, state matches state_expect,
+     the reply carries the required facts, no forbidden phrase is present,
+     and the gate returns APPROVED
+```
+
+```bash
+python -m shopagent.cli teacher --dry-run 5      # sample into out/teacher-dry
+python -m shopagent.cli teacher --out data --session-id teacher-<UTC>
+python -m shopagent.cli teacher --out data --resume --session-id teacher-<UTC>
+python -m shopagent.cli leakcheck --corpus data/train
+```
+
+Flags: `--dry-run N`, `--out DIR`, `--limit N`, `--only IDS`, `--session-id ID`,
+`--resume`. Concurrency is capped at 8. `verify-frozen` runs before the first
+request. A missing key exits 2 and writes nothing.
+
+Runs of 2026-11-13, session `teacher-20261113T011445Z`. Run 1 was the cleared
+plan; run 2 re-ran run 1's rejects only, after two brief changes.
+
+| | run 1 | run 2 (resume) | corpus |
+|---|---|---|---|
+| attempted | 284 | 232 | 284 |
+| admitted | 52 | 126 | **178** |
+| rejected | 232 | 106 | 106 |
+| requests | 512 | 463 | 975 |
+| wall time | 899 s | 490 s | — |
+| shards | 1 of 52 rows | 3 of 178 rows | 3 shards |
+
+Rejects now: `gate:REJECTED` 71, `gate:ESCALATED` 28, `plan_mismatch` 3,
+`forbidden_phrase` 2, `invalid_plan` 1, `leak_near:N-24` 1. Before the brief
+change the two largest were `facts_missing` 107 and `plan_mismatch` 68; they are
+0 and 3 now. Everything rejected is in `data/rejects/rejected.jsonl` with its
+reason; nothing rejected reached a shard.
+
+Composition: 164 free text (74 normal, 90 adversarial) and 14 composed (refund
+6, reshipment 4, status 4, address 0). Two rows are routed from composed to free
+text by the `unsupported_composed` rule: N-98 and N-110.
+
+Two admission rules, both approved by Daniel, both visible in the brief or the
+retry: the free-text brief lists the case's required facts as values the reply
+must state; and a `parse_error` or `invalid_plan` is resent once with the
+required shape, while a rejected verdict, a state mismatch or a missing fact is
+never resent.
+
+The brief also names the exact calls the scenario needs, and the reply brief
+repeats the required facts. That is wording only: no gate code, phrase list,
+verdict or reason code reaches the teacher.
+
+`--resume` is new surface, added outside the cleared plan — Daniel asked for one
+round of brief improvement and a re-run of only the rejected cases. A resumed
+pass reads the corpus on disk, regenerates only the given cases, keeps every
+other row, re-cuts shards and recomputes the manifest.
+
+**The corpus mixes two brief revisions.** 52 rows were generated under revision
+1, 126 under revision 2; `data/manifest.json` records the revision per run. The
+52 are not regenerated. See `EVIDENCE.md` for the full record.
+
+**The limit this creates.** The teacher was briefed on every case's ids and
+amounts, so the 284 bench scenarios are now seen. A score of a model trained on
+this corpus against the same cases measures recall, not generalisation. The two
+holdouts are the outside check; neither was in a prompt.
+
+**The corpus is 178 traces, not the 1,000+ sessions `SPEC.md` §3 targets.** It is
+an approved slice from the frozen bank; hand-written seeds and schema-driven
+expansion are still Open. See `EVIDENCE.md` for the full record.
+
 ## Gate
 
 Every decision is one of three verdicts:
@@ -210,7 +297,8 @@ wrong action, and only Phase B can widen prose coverage.
 
 ## Numbers, with the command that produced each
 
-Run 2026-11-11 on this machine (Windows, Python 3.13.14).
+Run 2026-11-11 on this machine (Windows, Python 3.13.14), with the teacher rows
+added 2026-11-13.
 
 | Claim | Command | Result |
 |---|---|---|
@@ -230,9 +318,12 @@ Run 2026-11-11 on this machine (Windows, Python 3.13.14).
 | Independent holdout 2 (scored once) | same | `holdout 2: 30/40 sabotage caught, 16/20 honest approved, exact 43/60` — reported, not gated |
 | Confusion matrix | same | honest: 229 approved / 0 rejected / 0 escalated; sabotage: 0 approved / 144 rejected / 6 escalated |
 | Free-text gate, unseen phrasing | third review, not reproducible in this repo | `12/32` caught, `20` false approvals |
-| Test suite | `python -m unittest discover -s tests -q` | `Ran 171 tests` · `OK`, exit 0 |
+| Teacher corpus generated | `python -m shopagent.cli teacher --out data --session-id teacher-20261113T011445Z` | 284 attempted, 52 admitted, 232 rejected, 512 requests, 899 s, exit 0 |
+| Teacher corpus resumed | `python -m shopagent.cli teacher --out data --resume --session-id teacher-20261113T011445Z` | 232 re-run, 126 admitted, 106 rejected, 463 requests, 490 s; corpus 178 of 284, exit 0 |
+| Teacher corpus manifest | `data/manifest.json` | 3 shards of 178 rows, `18ecdb3a…` / `89bacee4…` / `7e5f1cb0…`; template digest `68464655…7070f5`; `brief_revision` 2 (runs 1, 2); 92 holdout rows screened |
+| Test suite | `python -m unittest discover -s tests -q` | `Ran 231 tests` · `OK`, exit 0 |
 | Benchmark frozen | `python -m shopagent.cli verify-frozen` | `benchmark frozen: OK`, exit 0 |
-| No leakage yet | `python -m shopagent.cli leakcheck --corpus data/train` | `0 sessions`, 32 holdout replies checked, `leak check: CLEAN`, exit 0 |
+| Leak check over the corpus | `python -m shopagent.cli leakcheck --corpus data/train` | `178 sessions`, 284 cases, 92 holdout replies, four match lists empty, closest pair 0.75, `leak check: CLEAN`, exit 0 |
 
 Two holdout rows are caught but not exact: HR-21 and HR-22 are `REJECTED` where
 the reviewer wrote `ESCALATED`. Both name an address that contradicts state, and
@@ -276,6 +367,18 @@ Proven by commands in this repo:
 - The leak check searches the serialized record, so a holdout reply is found in
   a nested field, a split token list or a JSONL array line
   (`tests/test_leakcheck.py`).
+- The teacher corpus is gated before it is stored: a trace reaches a shard only
+  after the gate returns `APPROVED`; a reject keeps its reason code and both raw
+  responses; a bench-ticket or holdout collision is dropped and counted; a
+  holdout case id raises before any request; no key reaches disk
+  (`tests/test_corpus.py`, `tests/test_run.py`).
+- A resumed pass screens against all 284 cases, not only the cases it
+  regenerates, and derives its dropped-leak list from the reject ledger
+  (`tests/test_run.py`).
+- Leak checking runs over real data: 178 sessions against 284 cases and 92
+  holdout replies, `CLEAN`, closest pair 0.75 against a 0.8 threshold. One
+  generated ticket (`N-24`) crossed the line on the resumed pass and was
+  dropped; `N-98` crossed it in run 1 and was admitted clean in run 2.
 - The gate owns the commit. A rejected attempt and an escalated draft write no
   `replies` row; the escalation boundary keeps only the draft in `human_queue`
   (`tests/test_gate.py::test_escalates_after_three_rejections_and_keeps_only_the_draft`).
@@ -304,8 +407,20 @@ Not proven yet:
   wired. Free-text coverage beyond the tested phrasings must come from Phase B,
   and it does not exist yet. Free-text coverage is unsolved, not merely
   unmeasured.
-- Leak checking against real data. The corpus is empty by design; the check is
-  tested on fixtures only.
+- **The teacher corpus is 178 traces, not 1,000+.** It comes from the frozen 284
+  cases; hand-written seeds and schema-driven expansion (§3 of `SPEC.md`) are
+  still Open. The two passes admitted 63% of cases; the rest are recorded
+  rejects.
+- **The corpus mixes two brief revisions.** 52 rows were generated before the
+  brief change and 126 after it. They are treated as one distribution here; the
+  52 are not regenerated.
+- **Bench scenarios are now seen.** The teacher was briefed on every case's ids
+  and amounts, so a model trained on this corpus will be scored on scenarios it
+  has already restated. The two holdouts are the outside check.
+- **No composed address trace exists yet.** N-86 planned `status` where the case
+  needs `address` (`plan_mismatch`), and N-109 carried an extra `order_id` key
+  (`invalid_plan`); neither sent address text. N-110 was routed to free text.
+  Composed mode still cannot originate an address change.
 - Independent review. Helm runs the fresh-context review; it is pending.
 - The browser demo.
 
@@ -321,9 +436,10 @@ Next, in order:
 
 1. Grow the benchmark to 200+ cases and freeze it before any teacher data
    exists.
-2. Teacher pipeline: 15-20 hand-written seed tasks, schema-driven scenario
-   expansion to 1,000+ sessions, strict session format, validators, leak check.
-   Raw and filtered output kept separately.
+2. Teacher pipeline: a first approved slice exists — 178 traces from the frozen
+   284 cases, gated, manifested and leak-checked. Open: hand-written seeds and
+   schema-driven expansion to the 1,000+ sessions `SPEC.md` §3 targets, and the
+   99-gate-reject cluster named in `EVIDENCE.md`.
 3. Unsloth QLoRA run on Modal with config, loss curve, VRAM, wall time and the
    adapter saved to a Modal Volume.
 4. Wire Phase B: the judge is where free-text coverage beyond the tested

@@ -1,9 +1,275 @@
-# Evidence — benchmark growth to 284 cases and composed coverage
+# Evidence — teacher corpus, then benchmark growth
 
-2026-11-11 · author's run (preliminary, not the PASS) · tree not committed
+2026-11-13 · author's run (preliminary, not the PASS) · tree not committed
 
 **Status: gates green on this tree.** The unmet item is the fresh-context
 review, which the author cannot run.
+
+# Milestone 3 — teacher corpus (2026-11-13)
+
+Two passes of the teacher pipeline over the frozen 284 cases: a full run, then a
+brief change followed by a resumed pass over only the cases the first run
+rejected. No training, no Modal spend, no commit. The teacher and its two calls
+ride the OpenCode Go subscription; no metered line item was created.
+
+```
+python -m shopagent.cli teacher --out data --session-id teacher-20261113T011445Z
+python -m shopagent.cli teacher --out data --resume --session-id teacher-20261113T011445Z
+```
+
+## The honest headline
+
+**178 of 284 cases are trainable traces.** That is 63%. The first pass admitted
+52; the resumed pass re-ran its 232 rejects and admitted 126 of them, leaving
+106 rejects.
+
+The first pass's two largest causes were both brief defects, not teacher
+failures: the required values were listed only in the scenario brief, so the
+reply was written from a brief that never named them (`facts_missing` 107); and
+the brief never named the calls the scenario needs, so the teacher planned a
+different but valid plan (`plan_mismatch` 68). Fixing both moved the funnel:
+those two reasons fell to 0 and 3, and replies that used to die before the gate
+now reach it, so gate rejections rose (44 + 8 to 71 + 28).
+
+The corpus is **178 traces, not the 1,000+ sessions `SPEC.md` §3 targets**. It is
+an approved slice from the frozen bank. Seed tasks and schema expansion remain
+Open.
+
+## Counts
+
+| | run 1 | run 2 (resume) | corpus |
+|---|---|---|---|
+| attempted | 284 | 232 | 284 |
+| admitted | 52 | 126 | **178** |
+| rejected | 232 | 106 | 106 |
+| requests (HTTP attempts) | 512 | 463 | 975 |
+| wall time | 899 s | 490 s | — |
+| shards written | 52 rows | 178 rows | 3 shards |
+
+Arithmetic: `284 = 178 admitted + 106 rejected`. The one leak drop (`N-24`) sits
+inside the 106, counted once, as a reject with reason `leak_near:N-24`.
+
+## Rejects by reason, before and after the brief change
+
+| reason | run 1 | after resume |
+|---|---|---|
+| `facts_missing` | 107 | **0** |
+| `plan_mismatch` | 68 | **3** |
+| `gate:REJECTED` | 44 | 71 |
+| `gate:ESCALATED` | 8 | 28 |
+| `invalid_plan` | 2 | 1 |
+| `forbidden_phrase` | 2 | 2 |
+| leak drop | 1 (`N-98`) | 1 (`N-24`) |
+| **total** | **232** | **106** |
+
+Run 1 examples: N-05 missing `['label created']`, N-15 missing `['could not
+refund', 'pending payment']`; N-16 missing the `refund_order 1850` call, N-25
+missing `update_address` with `line1`/`city`. After the change N-05 and N-16
+both admit.
+
+`N-98` was dropped in run 1 for a near-duplicate ticket and admitted clean in
+run 2; `N-24` crossed the same line in run 2 and was dropped. The screen is
+doing its job on generated text; its threshold did not move.
+
+## The brief changes
+
+All three are teacher-brief wording only. No gate code, phrase list, verdict or
+reason code is exposed to the teacher.
+
+1. **The scenario brief names the calls.** The free-text brief now lists
+   `The scenario needs exactly these tool calls, in this order:` with each
+   `name(args)`, and says to call each once, add none, drop none. This is the
+   plan the ticket requires, not the reply.
+2. **The reply brief repeats the required values.** `build_reply_brief` now
+   carries `Your reply must state these values, word for word:` with the case's
+   required facts. The reply is written from that brief; before the change the
+   values appeared only in the earlier scenario brief.
+3. **Composed address no longer prints the street.** The `New street:` line is
+   emitted only on the free-text path, because a composed plan names an existing
+   row and `line1` is refused. No composed address trace exists: N-86 planned
+   `status` where the case needs `address` (`plan_mismatch`), and N-109 carried
+   an extra `order_id` key (`invalid_plan`).
+
+## `--resume` is new surface, added outside the cleared plan
+
+`docs/TEACHER-DATA-PLAN.md` was cleared without a resume path. Daniel asked for
+one round of brief improvement followed by a re-run of only the rejected cases,
+so `run_generation(..., resume=True)` and `cli teacher --resume` were added
+after clearance. They are additive: a fresh run behaves exactly as before, and
+the first pass in this record was produced by the cleared path.
+
+Behaviour: read the corpus on disk, generate only the given cases, replace those
+cases' old verdicts, keep every other row, re-cut shards deterministically, and
+recompute the manifest. `runs[]` keeps one entry per pass.
+
+## Fixed while proving it
+
+- **A resumed pass screened the wrong case set.** `_screen` compared against the
+  subset passed to the run (232 cases), so a bench ticket outside that subset
+  would have passed. It now screens against all 284, always. A test proves a
+  resumed pass refuses `N-01`'s ticket while `N-01` is not in its subset.
+- **A resumed pass dropped the leak ledger.** The in-run drop list was filtered
+  by the re-run ids and nothing replaced it, so `dropped_leaks` came out empty
+  while a reject read `leak_near:N-24`. Drops are now derived from the reject
+  ledger, which is the only place a drop is written.
+- **`reindex_manifest(out_dir)`** recomputes every derived field from the bytes
+  on disk, so the manifest can be rebuilt without regenerating a single row.
+
+## `brief_revision`
+
+`template_digest` hashes the system prompt and the stage instructions. It cannot
+see a change to `build_scenario_brief` or `build_reply_brief`, and the brief is
+what changed here. `teacher.BRIEF_REVISION` now records that, and the manifest
+carries it at the top level and in each `runs[]` entry: run 1 = 1, run 2 = 2.
+
+**Mixed-revision caveat.** The corpus holds 52 rows generated under brief
+revision 1 and 126 under revision 2. Rows carry no brief-revision field of their
+own; the split is recoverable from `runs[]` and case order only. If the corpus
+is ever trained on, either treat the two revisions as one distribution and say
+so, or regenerate the 52.
+
+## Composition of the admitted 178
+
+| kind | free text | composed | total |
+|---|---|---|---|
+| normal | 74 | 14 | 88 |
+| adversarial | 90 | 0 | 90 |
+| **total** | **164** | **14** | **178** |
+
+Composed actions admitted: refund 6, reshipment 4, status 4, address 0. No
+composed address trace entered the corpus: N-86 planned `status` where the case
+needs `address` (`plan_mismatch`), N-109 carried an extra `order_id` key
+(`invalid_plan`), and the one supported address write (N-110) was routed to free
+text by the `unsupported_composed` rule. Two rows are routed: N-98 and N-110.
+
+## What the pipeline guarantees, and where it is tested
+
+- Nothing reaches a shard before `gate.evaluate` returns `APPROVED`, and the run
+  refuses to start unless `verify-frozen` passes.
+- The teacher never sees a bench ticket. A brief carries title, ids, amounts,
+  fault modes, required calls and required facts — never `ticket` text.
+- Raw output is kept verbatim in `data/raw/raw.jsonl` (965 rows), beside the
+  parsed row, so a parse bug is recoverable without regenerating.
+- A row that collides with a bench ticket or either holdout reply is dropped and
+  recorded, never written to a shard. The screen always runs against all 284.
+- A holdout case id cannot enter: `_guard_ids` raises before any request.
+- A key never reaches disk. A sentinel scan over the whole output tree proves
+  `Bearer` and `OPENCODE_API_KEY` appear in no file.
+- Every row carries provenance: model, gateway, session id, case id, timestamp,
+  verdict, codes, source-ticket sha256 (never the text).
+
+Tests: `tests/test_teacher.py` (17), `tests/test_corpus.py` (27),
+`tests/test_run.py` (16). One each for the six refusal paths, the N-99…N-102
+status source, the `unsupported_composed` rule, manifest arithmetic, shard
+digests, the key scan, the holdout guard, resume merge, the empty-ledger resume,
+drop derivation, the reindex rebuild, and the full-bank screen on a resumed pass.
+
+## Commands and exit codes
+
+The gate rows below were run on this final tree. The two teacher rows are
+historical: run 1 generated under brief revision 1, which this tree no longer
+emits, so its counts and wall time are unproven here. Run 2 re-ran run 1's
+rejects under revision 2 and is likewise a record, not a replay.
+
+| Command | Exit | Result |
+|---|---|---|
+| `python -m shopagent.cli teacher --out data --session-id teacher-20261113T011445Z` | 0 | 284 attempted, 52 admitted, 232 rejected, 512 requests, 899 s |
+| `python -m shopagent.cli teacher --out data --resume --session-id teacher-20261113T011445Z` | 0 | 232 re-run, 126 admitted, 106 rejected, 463 requests, 490 s; corpus 178 |
+| `python -m shopagent.cli validate` | 0 | `284 cases: 134 normal, 150 adversarial` · `valid` |
+| `python -m shopagent.cli bench` | 0 | numbers below |
+| `python -m unittest discover -s tests -q` | 0 | `Ran 231 tests` · `OK` |
+| `python -m shopagent.cli leakcheck --corpus data/train` | 0 | 178 sessions, 284 cases, 92 holdout replies, `CLEAN` |
+| `git diff --check` | 0 | clean |
+
+## Leak check
+
+```
+corpus: data/train (178 sessions)
+cases: 284  threshold: 0.8
+holdout replies (forbidden in training): 92
+exact matches: 0
+near matches: 0
+holdout exact matches: 0
+holdout near matches: 0
+closest pair: N-79 ~ shard-000.jsonl:63 (0.75)
+leak check: CLEAN
+```
+
+The closest pair is 0.75 against a 0.8 threshold. The screen runs over both
+holdouts, 92 replies.
+
+## Manifest and digests (`data/manifest.json`)
+
+```
+version            1
+generated_at       2026-11-13T01:14:45+00:00
+updated_at         2026-11-13T01:39:48+00:00
+brief_revision     2        (runs: 1, 2)
+model              deepseek-v4.1-flash
+gateway            https://opencode.ai/zen/go/v1
+session_id         teacher-20261113T011445Z
+template_digest    6846465566d8235cd3c8f66e2c21fe6e8859c1f8e8c2b31395b85136717070f5
+cases_digest       a76a732fa9b1f0126a76a2465f00e1b9bee6eca66e3fd22fa993598621c66364
+shard-000          64 rows  18ecdb3ade699a84…
+shard-001          64 rows  89bacee48fdb3de3…
+shard-002          50 rows  7e5f1cb05524dd73…
+raw/raw.jsonl      965 rows e60be597c977384f…
+rejects            106 rows 570f67f5d30c9ab7…
+dropped_leaks      [{"case": "N-24", "reason": "leak_near:N-24"}]
+requests           975 (512 + 463)
+```
+
+The manifest also carries `runs[]`, one entry per pass with its own counts,
+requests, template digest and brief revision.
+
+## Bench numbers on this tree
+
+```
+oracle self-check     : 205/205 cases consistent
+scripted fake model   : overall 205/205
+gate approvals        : 205/205 original honest replies approved
+gate catch rate       : 95/95 original sabotage replies caught (93 rejected, 2 escalated, 0 false approvals)
+paraphrase catch      : 55/55 sabotage replies caught
+paraphrase honest     : 24/24 honest replies approved
+honest, all suites    : 229/229 approved
+holdout 1             : 32/32 caught, 30/32 exact
+holdout 2             : 30/40 sabotage caught, 16/20 honest approved, exact 43/60
+```
+
+## The limit this run creates
+
+**The bench scenarios are now seen.** The teacher was briefed on every case's
+ids, amounts and calls, and 178 approved traces restate those scenarios in new
+words. A later score of a model trained on this corpus against the same 284
+cases measures recall of seen scenarios, not generalisation. The two holdouts
+are the outside check, and they were never in a prompt.
+
+This does not weaken the frozen benchmark: the case files and the holdouts are
+untouched, `verify-frozen` passes, and the digests above match `bench/FROZEN.json`.
+
+## Not proven
+
+- No model trained. No adapter, no GGUF, no Modal run.
+- 178 traces is below the 1,000+ session target in `SPEC.md` §3.
+- Composed mode has no address trace in the corpus.
+- Bench scores from here on are seen-scenario scores, not generalisation.
+- The 52 rows generated under brief revision 1 are not regenerated.
+- Independent review pending. Helm spawns `helm/shipwright-reviewer` for the
+  PASS that counts. Not run.
+- Nothing committed.
+
+## Open
+
+- **`gate:REJECTED` 71 and `gate:ESCALATED` 28.** After the brief fix these are
+  the largest remaining cause: 99 of 106 rejects. Several replies describe a
+  *pre-existing* refund or shipment as one the agent made, and Phase A rejects a
+  completion claim it cannot bind to a change this run. Whether that is a gate
+  reading to accept, a teacher instruction to sharpen, or a Phase B job is
+  Daniel's decision. Not fixed here; no rule or threshold was touched.
+
+---
+
+# Milestone 2 — benchmark growth to 284 cases (2026-11-11)
 
 ## The honest headline
 
