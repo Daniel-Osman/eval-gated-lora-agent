@@ -32,12 +32,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import random
 import re
 import statistics
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .teacher import SYSTEM_PROMPT as FREE_TEXT_SYSTEM_PROMPT
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = ROOT / "data" / "train"
@@ -51,6 +54,38 @@ TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jin
 TOKENIZER_CLASS = "Qwen3_5Tokenizer"
 ENABLE_THINKING = False
 
+# One mode, one prompt. The corpus carries the free-text prompt on every row;
+# the composed path gets its own, so the output shape is decidable from the
+# prompt instead of guessed from a ticket that reads the same in both modes.
+COMPOSED_SYSTEM_PROMPT = """You serve the composed mode of a small online shop's support agent. You read
+one customer ticket and return one action object.
+
+Return one JSON object and nothing else. The object names one action and the ids
+that action needs, with exactly these keys:
+- {"action": "status", "order_id": "ORD-1001"}
+- {"action": "refund", "order_id": "ORD-1001", "amount_cents": 2100}
+- {"action": "reshipment", "order_id": "ORD-1001"}   (add "shipment_id": "SHP-1001" when the ticket names one shipment)
+- {"action": "address", "address_id": "ADR-1001"}
+
+Rules:
+- Return an object, never a list of tool calls, and never write a customer reply.
+- Use only the action names and keys above. Any other key is refused.
+- amount_cents is a positive integer number of cents, and only a refund takes it.
+- Use only the ids and amounts named in the ticket. Never invent an order, an
+  amount, an address or a shipment.
+- The sentence the customer reads is rendered from the database row this action
+  writes, not written here.
+""".strip(
+    "\n"
+)
+
+MODE_PROMPTS = {"free_text": FREE_TEXT_SYSTEM_PROMPT, "composed": COMPOSED_SYSTEM_PROMPT}
+
+# Copied from train/modal_app.py, where the trainer enforces them. The test
+# suite parses those literals back out of that file, so the two cannot drift.
+TRAIN_MAX_SEQ_LEN = 2560
+TRAIN_DATASET_PIN = "bfe5bb3e61676dd4079cf2f81285ed82b9219b2659913924a6a20f7c2bd0e9cc"
+
 IGNORE_INDEX = -100
 SEED = 20261113
 VAL_FRACTION = 0.1
@@ -58,6 +93,17 @@ TOKEN_BIN_WIDTH = 256
 SHARD_GLOB = "shard-*.jsonl"
 OUT_NAME = "sft.jsonl"
 MANIFEST_NAME = "manifest.json"
+
+# The composed train slice is rebalanced to this share, because the student read
+# one shape from a corpus where 13 composed rows sat against 147 free-text rows.
+COMPOSED_TRAIN_SHARE = 0.40
+REPEAT_SEED = SEED + 1
+
+# Copied from train/modal_app.py, where the trainer enforces them. The test
+# suite parses those literals back out of that file, so the two cannot drift.
+TRAIN_GRAD_ACCUM = 4
+TRAIN_EPOCHS = 3
+TRAIN_STEP_CAP = 200
 
 REQUIRED_ROW_KEYS = ("case", "id", "messages", "path", "plan", "target")
 RECORD_KEYS = ("brief_revision", "case", "id", "input_ids", "labels", "path", "shard", "split", "text")
@@ -304,6 +350,12 @@ def convert_row(tokenizer, row: dict, shard: str, revision: int) -> dict:
     if messages[2].get("content") != json.dumps(row.get("plan")):
         raise SftError("plan_text_mismatch", f"{label}: messages[2] is not json.dumps(plan)")
 
+    if messages[0].get("content") != FREE_TEXT_SYSTEM_PROMPT:
+        raise SftError(
+            "system_prompt_drift",
+            f"{label}: messages[0] is not the teacher system prompt; the mode marker is applied once, not stacked",
+        )
+
     if path == "free_text":
         if target.get("type") != "plan_and_reply":
             raise SftError("target_type", f"{label}: expected plan_and_reply, got {target.get('type')!r}")
@@ -323,8 +375,13 @@ def convert_row(tokenizer, row: dict, shard: str, revision: int) -> dict:
     else:
         raise SftError("path", f"{label}: unknown path {path!r}")
 
-    text = render_chat(tokenizer, messages)
-    ids, spans = supervised_spans(text, messages, tokenizer)
+    rendered = messages
+    if path == "composed":
+        rendered = [dict(message) for message in messages]
+        rendered[0]["content"] = MODE_PROMPTS["composed"]
+
+    text = render_chat(tokenizer, rendered)
+    ids, spans = supervised_spans(text, rendered, tokenizer)
 
     labels = [IGNORE_INDEX] * len(ids)
     for start, end in spans:
@@ -348,6 +405,86 @@ def split_records(records: list[dict], seed: int = SEED, fraction: float = VAL_F
     shuffled = sorted(record["id"] for record in records)
     random.Random(seed).shuffle(shuffled)
     return set(sorted(shuffled[:val_count]))
+
+
+def target_composed_train(free_text_train: int) -> int:
+    """Composed train rows that put composed at COMPOSED_TRAIN_SHARE of the split.
+
+    ``composed / (free + composed) = share`` gives
+    ``composed = share / (1 - share) * free``.
+    """
+    if not 0 < COMPOSED_TRAIN_SHARE < 1:
+        raise SftError("share", f"COMPOSED_TRAIN_SHARE must sit between 0 and 1, got {COMPOSED_TRAIN_SHARE}")
+    return round(COMPOSED_TRAIN_SHARE / (1 - COMPOSED_TRAIN_SHARE) * free_text_train)
+
+
+def plan_composed_repeats(records: list[dict], seed: int = SEED) -> dict:
+    """How many copies of each composed train row to write.
+
+    Repeats go to the training split only. Every base row keeps one copy; the
+    remainder is spread one extra copy each, and the seed decides which rows
+    take it.
+    """
+    train = [record for record in records if record["split"] == "train"]
+    free_text = sum(1 for record in train if record["path"] == "free_text")
+    composed = sorted(record["id"] for record in train if record["path"] == "composed")
+    target = target_composed_train(free_text)
+    copies = max(0, target - len(composed))
+    per_row, remainder = divmod(copies, len(composed)) if composed else (0, 0)
+    shuffled = list(composed)
+    random.Random(seed + 1).shuffle(shuffled)
+    extra = sorted(shuffled[:remainder])
+    counts = {row_id: 1 + per_row + (1 if row_id in extra else 0) for row_id in composed}
+    return {
+        "free_text_train": free_text,
+        "base_composed": len(composed),
+        "target": target,
+        "copies": copies,
+        "per_row": per_row,
+        "remainder": remainder,
+        "extra_copy_ids": extra,
+        "counts": counts,
+    }
+
+
+def order_train(records: list[dict], counts: dict[str, int], seed: int = SEED) -> list[dict]:
+    """Train rows in a deterministic order that never puts one id beside itself.
+
+    Free-text rows keep their file order. Composed copies are drawn by a seeded
+    scheduler that refuses the previous id, then spread across the free-text
+    gaps, so no two neighbours share an id.
+    """
+    train = [record for record in records if record["split"] == "train"]
+    free_text = [record for record in train if record["path"] == "free_text"]
+    by_id = {record["id"]: record for record in train if record["path"] == "composed"}
+
+    remaining = dict(counts)
+    total = sum(remaining.values())
+    rng = random.Random(seed + 2)
+    priority = list(remaining)
+    rng.shuffle(priority)
+    rank = {row_id: index for index, row_id in enumerate(priority)}
+    sequence: list[dict] = []
+    previous: str | None = None
+    while len(sequence) < total:
+        candidates = [row_id for row_id, left in remaining.items() if left > 0 and row_id != previous]
+        if not candidates:
+            raise SftError("repeat_order", f"cannot separate {previous} from itself")
+        pick = min(candidates, key=lambda row_id: (-remaining[row_id], rank[row_id]))
+        sequence.append(by_id[pick])
+        remaining[pick] -= 1
+        previous = pick
+
+    ordered: list[dict] = []
+    cursor = 0
+    for position, record in enumerate(free_text):
+        ordered.append(record)
+        target_seen = (position + 1) * len(sequence) // (len(free_text) + 1)
+        while cursor < target_seen:
+            ordered.append(sequence[cursor])
+            cursor += 1
+    ordered.extend(sequence[cursor:])
+    return ordered
 
 
 def histogram(values: list[int], width: int = TOKEN_BIN_WIDTH) -> dict:
@@ -384,8 +521,13 @@ def build(
     bench_dir: Path = DEFAULT_BENCH,
     fetch: bool = False,
     tokenizer=None,
+    rebalance: bool = True,
 ) -> dict:
-    """Convert every shard row, write the records and the manifest, return it."""
+    """Convert every shard row, rebalance the composed train slice, write both files.
+
+    `rebalance=False` writes the base records only; the test suite uses it to
+    prove the val split and val bytes do not move when the rebalance is on.
+    """
     tokenizer = tokenizer or load_tokenizer(fetch=fetch)
     shards = load_shards(corpus_dir)
     revisions = revisions_from_manifest(revision_manifest)
@@ -438,12 +580,23 @@ def build(
             f"{source_rows} source rows but {len(records)} converted and {len(drops)} named drops",
         )
 
+    longest = max(records, key=lambda record: len(record["input_ids"]))
+    if len(longest["input_ids"]) > TRAIN_MAX_SEQ_LEN:
+        raise SftError(
+            "record_too_long",
+            f"{longest['id']} is {len(longest['input_ids'])} tokens, above MAX_SEQ_LEN {TRAIN_MAX_SEQ_LEN}",
+        )
+
     val_ids = split_records(records)
     for record in records:
         record["split"] = "val" if record["id"] in val_ids else "train"
 
+    base_records = records
+    base_tokens = sum(len(record["input_ids"]) for record in base_records)
+    base_kept = sum(sum(1 for label in record["labels"] if label != IGNORE_INDEX) for record in base_records)
+
     groups: dict[str, dict[str, dict]] = {}
-    for record in records:
+    for record in base_records:
         group = groups.setdefault(record["path"], {}).setdefault(
             f"revision_{record['brief_revision']}", {"rows": 0, "plan_shapes": {}, "schema": None}
         )
@@ -454,7 +607,11 @@ def build(
     for path, revisions_in_path in groups.items():
         schemas = {}
         for name, group in revisions_in_path.items():
-            subset = [record for record in records if record["path"] == path and f"revision_{record['brief_revision']}" == name]
+            subset = [
+                record
+                for record in base_records
+                if record["path"] == path and f"revision_{record['brief_revision']}" == name
+            ]
             schema = _schema(subset)
             if schema is None:
                 raise SftError("schema_drift", f"{path} {name}: records disagree on their shape")
@@ -462,6 +619,18 @@ def build(
             schemas[name] = json.dumps(schema, sort_keys=True)
         if len(set(schemas.values())) > 1:
             raise SftError("schema_drift", f"{path}: record schema differs between brief revisions")
+
+    rebalance_plan = None
+    if rebalance:
+        rebalance_plan = plan_composed_repeats(base_records)
+        val_records = [record for record in base_records if record["split"] == "val"]
+        records = val_records + order_train(base_records, rebalance_plan["counts"])
+    else:
+        records = base_records
+
+    train_records = [record for record in records if record["split"] == "train"]
+    steps_per_epoch = math.ceil(len(train_records) / TRAIN_GRAD_ACCUM) if train_records else 0
+    total_steps = steps_per_epoch * TRAIN_EPOCHS
 
     lengths = [len(record["input_ids"]) for record in records]
     kept_lengths = [sum(1 for label in record["labels"] if label != IGNORE_INDEX) for record in records]
@@ -474,6 +643,62 @@ def build(
     output_bytes = payload.encode("utf-8")
     output_path.write_bytes(output_bytes)
 
+    rebalance_block = None
+    if rebalance_plan is not None:
+        share = COMPOSED_TRAIN_SHARE
+        product = share / (1 - share) * rebalance_plan["free_text_train"]
+        before_composed = rebalance_plan["base_composed"]
+        after_composed = rebalance_plan["target"]
+        before_rows = rebalance_plan["free_text_train"] + before_composed
+        after_rows = rebalance_plan["free_text_train"] + after_composed
+        counts = sorted(rebalance_plan["counts"].values())
+        rebalance_block = {
+            "applied": True,
+            "rule": (
+                "composed_train = round(0.4 / 0.6 * free_text_train); every composed row keeps one copy, "
+                "the seed spreads the remainder one copy each, then the copies are shuffled apart"
+            ),
+            "share_target": share,
+            "repeat_seed": REPEAT_SEED,
+            "derivation": {
+                "free_text_train": rebalance_plan["free_text_train"],
+                "expression": f"round({share} / {1 - share:.1f} * {rebalance_plan['free_text_train']})",
+                "product": round(product, 4),
+                "rounded": rebalance_plan["target"],
+                "base_composed_train": before_composed,
+                "copies_added": rebalance_plan["copies"],
+                "copies_per_row": rebalance_plan["per_row"],
+                "remainder": rebalance_plan["remainder"],
+                "extra_copy_ids": rebalance_plan["extra_copy_ids"],
+                "repeat_factor": round(after_composed / before_composed, 4) if before_composed else None,
+                "counts": {str(count): counts.count(count) for count in sorted(set(counts))},
+            },
+            "epoch_composition": {
+                "before": {
+                    "train_rows": before_rows,
+                    "free_text": rebalance_plan["free_text_train"],
+                    "composed": before_composed,
+                    "composed_share": round(before_composed / before_rows, 4) if before_rows else 0,
+                },
+                "after": {
+                    "train_rows": after_rows,
+                    "free_text": rebalance_plan["free_text_train"],
+                    "composed": after_composed,
+                    "composed_share": round(after_composed / after_rows, 4) if after_rows else 0,
+                },
+            },
+            "val": {
+                "rows": len(val_ids),
+                "free_text": sum(
+                    1 for record in base_records if record["split"] == "val" and record["path"] == "free_text"
+                ),
+                "composed": sum(
+                    1 for record in base_records if record["split"] == "val" and record["path"] == "composed"
+                ),
+                "changed": False,
+            },
+        }
+
     manifest = {
         "version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -485,9 +710,28 @@ def build(
                 for shard in shards
             ],
         },
-        "converted": len(records),
+        "converted": len(base_records),
         "composition": {
-            path: sum(1 for record in records if record["path"] == path) for path in ("free_text", "composed")
+            path: sum(1 for record in base_records if record["path"] == path) for path in ("free_text", "composed")
+        },
+        "rebalance": rebalance_block,
+        "token_delta": {
+            "supervised": {"before": base_kept, "after": total_kept, "added": total_kept - base_kept},
+            "rendered": {"before": base_tokens, "after": total_tokens, "added": total_tokens - base_tokens},
+            "why": (
+                "a written copy repeats its composed record byte for byte, so every added supervised token is a "
+                "composed plan token already present in the base rows; the rendered rise also repeats each copy's "
+                "system prompt and ticket"
+            ),
+        },
+        "budget": {
+            "grad_accum": TRAIN_GRAD_ACCUM,
+            "epochs": TRAIN_EPOCHS,
+            "step_cap": TRAIN_STEP_CAP,
+            "train_rows": len(train_records),
+            "steps_per_epoch": steps_per_epoch,
+            "total_steps": total_steps,
+            "fits_cap": total_steps <= TRAIN_STEP_CAP,
         },
         "drops": drops,
         "by_shard": by_shard,
@@ -504,6 +748,27 @@ def build(
             "tokenizer_json_sha256": tokenizer_json_sha256(),
             "enable_thinking": ENABLE_THINKING,
             "environment": {"transformers": _transformers_version()},
+        },
+        "prompts": {
+            "free_text": {
+                "source": "shopagent.teacher.SYSTEM_PROMPT",
+                "text": FREE_TEXT_SYSTEM_PROMPT,
+                "sha256": sha256_bytes(FREE_TEXT_SYSTEM_PROMPT.encode("utf-8")),
+            },
+            "composed": {
+                "source": "shopagent.sft.COMPOSED_SYSTEM_PROMPT",
+                "text": COMPOSED_SYSTEM_PROMPT,
+                "sha256": sha256_bytes(COMPOSED_SYSTEM_PROMPT.encode("utf-8")),
+            },
+        },
+        "train_app_pin": {
+            "constant": "DATASET_SHA256",
+            "value": TRAIN_DATASET_PIN,
+            "matches_output": TRAIN_DATASET_PIN == sha256_bytes(output_bytes),
+            "note": (
+                "train/modal_app.py pins the dataset digest; retraining is blocked until a later "
+                "slice accepts this artifact and repins that line"
+            ),
         },
         "config": {
             "seed": SEED,
@@ -532,7 +797,13 @@ def build(
             "fraction_of_all": round(total_kept / total_tokens, 4),
         },
         "val": {"fraction": VAL_FRACTION, "rows": len(val_ids), "ids": sorted(val_ids), "label": VAL_LABEL},
-        "output": {"dir": display_path(out_dir), "file": OUT_NAME, "rows": len(records), "sha256": sha256_bytes(output_bytes)},
+        "output": {
+            "dir": display_path(out_dir),
+            "file": OUT_NAME,
+            "rows": len(records),
+            "source_records": len(base_records),
+            "sha256": sha256_bytes(output_bytes),
+        },
         "open_items": list(OPEN_ITEMS),
     }
 
@@ -552,8 +823,8 @@ def _transformers_version() -> str:
 
 def _report(manifest: dict) -> list[str]:
     lines = [
-        f"sft: {manifest['converted']} records -> {manifest['output']['dir']}/{OUT_NAME} "
-        f"(sha256 {manifest['output']['sha256'][:16]})"
+        f"sft: {manifest['converted']} source records -> {manifest['output']['rows']} written rows "
+        f"-> {manifest['output']['dir']}/{OUT_NAME} (sha256 {manifest['output']['sha256'][:16]})"
     ]
     for shard in manifest["source"]["shards"]:
         stats = manifest["by_shard"][shard["name"]]
@@ -579,6 +850,43 @@ def _report(manifest: dict) -> list[str]:
         f"({kept['fraction_of_all']:.1%} of all)"
     )
     lines.append(f"  val: {manifest['val']['rows']} rows, {manifest['val']['label']}")
+    rebalance = manifest.get("rebalance")
+    if rebalance:
+        before = rebalance["epoch_composition"]["before"]
+        after = rebalance["epoch_composition"]["after"]
+        derivation = rebalance["derivation"]
+        lines.append(
+            f"  rebalance: {derivation['copies_added']} composed repeats, {derivation['copies_per_row']} per row "
+            f"+ {derivation['remainder']} extra (factor {derivation['repeat_factor']})"
+        )
+        lines.append(
+            f"  epoch composition: before {before['free_text']} free + {before['composed']} composed "
+            f"({before['composed_share']:.2%}); after {after['free_text']} free + {after['composed']} composed "
+            f"({after['composed_share']:.2%}) over {after['train_rows']} rows"
+        )
+    delta = manifest["token_delta"]
+    lines.append(
+        f"  supervised tokens: {delta['supervised']['before']} -> {delta['supervised']['after']} "
+        f"(+{delta['supervised']['added']}); rendered {delta['rendered']['before']} -> "
+        f"{delta['rendered']['after']} (+{delta['rendered']['added']})"
+    )
+    budget = manifest["budget"]
+    lines.append(
+        f"  budget: {budget['train_rows']} train rows / {budget['grad_accum']} = {budget['steps_per_epoch']} "
+        f"steps per epoch x {budget['epochs']} = {budget['total_steps']} (cap {budget['step_cap']}, "
+        f"fits {budget['fits_cap']})"
+    )
+    prompts = manifest["prompts"]
+    lines.append(
+        f"  prompts: free_text sha256 {prompts['free_text']['sha256'][:16]}, "
+        f"composed sha256 {prompts['composed']['sha256'][:16]}"
+    )
+    pin = manifest["train_app_pin"]
+    if not pin["matches_output"]:
+        lines.append(
+            f"  dataset pin: {pin['constant']} is {pin['value'][:16]} and does not match this output; "
+            "retraining is blocked until it is repinned"
+        )
     lines.append(f"  histogram: bin width {TOKEN_BIN_WIDTH}")
     for bucket, count in tokens["histogram"]["bins"].items():
         lines.append(f"    {bucket:>9}: {count}")

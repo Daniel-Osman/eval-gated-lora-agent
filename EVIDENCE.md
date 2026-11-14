@@ -2,8 +2,9 @@
 
 2026-11-13 · author's run (preliminary, not the PASS) · tree not committed
 
-**Status: gates green on this tree.** The unmet item is the fresh-context
-review, which the author cannot run.
+**Status: gates green on this tree, and composed mode closed on 14 seen cases
+with the limit stated in milestone 4b.** The fresh-context review is the one
+unmet item, and the author cannot run it.
 
 # Milestone 4 — SFT data, one adapter, the load-and-shape check (2026-11-13)
 
@@ -226,6 +227,272 @@ by this repo.
 - **The composed-format decision.** How the student learns the composed plan
   shape: a separate prompt per mode, a rebalanced composed slice, constrained
   decoding, or something else. Daniel's call; no patch was written.
+
+# Milestone 4b — the composed-format fix (2026-11-13)
+
+Author's record, written after milestone 4. This closes the composed-mode
+failure recorded above and leaves it in place as history. Stage 3 stays
+**gated, not accepted**: the fresh-context verdict is outstanding.
+
+Headline: the tuned student now emits a composed plan that parses and matches
+`required_calls` on 14 composed cases. Section `## Not proven` carries the one
+limit that must travel with that number.
+
+## The cause
+
+Every row carried one system prompt. A composed ticket and a free-text refund
+ticket read alike, but demand different output shapes: a plan object for one, a
+plan list plus a customer reply for the other. Nothing in the prompt named the
+shape, so the model read the shape from the corpus, and the corpus repeated one
+shape: 14 composed rows against 164 free-text rows (milestone 4 table above).
+N-105 is the measurement: composed target, free-text output, validator refusal
+`unknown action None`.
+
+`Unverified:` no run isolated oversampling alone. The reason it cannot work is
+an argument, not a measurement: more copies of a row whose prompt does not name
+the shape still ask the model to guess, and repeats teach frequency, not
+contract.
+
+## The fix, two parts (`shopagent/sft.py`)
+
+1. **One prompt per mode.** `COMPOSED_SYSTEM_PROMPT` (`shopagent/sft.py:60`)
+   names the contract: one JSON object, never a list of tool calls, never a
+   customer reply, the four action names, the allowed keys, `amount_cents` as a
+   positive integer on a refund only, ids only from the ticket. Free text keeps
+   `shopagent.teacher.SYSTEM_PROMPT` untouched: `sft.py:43` imports it,
+   `MODE_PROMPTS` (`sft.py:82`) maps it, and `convert_row` swaps the system
+   message **only** on `path == "composed"` (`sft.py:379-381`). A row whose
+   stored system message is not the teacher prompt is refused as
+   `system_prompt_drift` (`sft.py:353-357`), so the marker is applied once and
+   never stacked. Tests: `tests/test_sft.py::ModePrompts` —
+   `test_composed_rows_carry_the_composed_prompt`,
+   `test_free_text_rows_keep_the_teacher_prompt`,
+   `test_prompt_already_marked_is_refused`, `test_prompt_digests_are_recorded`.
+2. **A solved rebalance of the composed train slice.**
+   `COMPOSED_TRAIN_SHARE = 0.40` (`sft.py:99`). The target is solved from the
+   free-text count, not tuned by hand: `round(0.4 / 0.6 * 147) = 98`
+   (`target_composed_train`, `sft.py:410`). Every one of the 13 composed train
+   rows keeps a copy; the 85 remaining copies spread 6 per row, and the seed
+   (`REPEAT_SEED = 20261114`) picks the 7 rows that take an eighth. Copies go to
+   the training split only, and `order_train` (`sft.py:450`) refuses to place two
+   copies of one id side by side. Tests:
+   `test_target_arithmetic`, `test_repeats_are_train_composed_rows_only`,
+   `test_every_repeat_is_byte_identical`, `test_no_two_neighbours_share_an_id`,
+   `test_rebalance_hits_the_decided_numbers`,
+   `test_real_repeats_are_train_only_and_neighbours_differ`.
+
+Val keeps its 18 rows, its ids and its order, and it is **not** byte-identical to
+the previous run. The composed prompt swap rewrites the system turn of
+`T-N-104`, the split's one composed row, and that swap is the only change to it:
+same ticket, same assistant plan, one 29-token supervised span, 351 tokens total
+(`sft.py:379-381` swaps the system message on `path == "composed"` and touches
+nothing else). So val loss is comparable with the milestone-4 curve, not measured
+on the same bytes. `rebalance.val.changed: false` and
+`test_val_split_and_bytes_are_unchanged` prove the split and its bytes survive the
+**rebalance**; neither compares the pre-fix artifact with the post-fix one, so
+neither is evidence of byte identity across the prompt change. The guard for that
+claim is the free-text digest test: 164 free-text records, source order, hashing
+to `9519a868…87479`, the pre-fix value.
+
+## The data
+
+`python -m shopagent.sft` → `data/sft/sft.jsonl` and
+`data/sft/manifest.json`; the manifest the run consumed is
+`generated_at 2026-11-13T20:33:17+00:00`, and the final tree carries a
+regeneration at `2026-11-13T21:10:09+00:00` with the same `sft.jsonl` digest
+(`bfe5bb3e…`).
+`train/modal_app.py:74` was repinned to the new digest for the retrain, and
+`shopagent/sft.py:87` now carries the same digest; `train_app_pin.matches_output`
+is `true` in the regenerated manifest.
+
+| | before (milestone 4) | after |
+|---|---|---|
+| source records | 178 | 178 |
+| written rows | 178 | **263** |
+| output digest | `5cab4f46…4850fb` | `bfe5bb3e61676dd4079cf2f81285ed82b9219b2659913924a6a20f7c2bd0e9cc` |
+| supervised tokens, stored masks | 17,748 | **19,693** (+1,945) |
+| rendered tokens | 289,759 | 310,100 |
+| train rows | 160 (147 free + 13 composed) | 245 (147 free + 98 composed) |
+| composed share of the train epoch | 8.13 % | **40.00 %** |
+| val rows | 18 | 18 (same rows, ids and order; `T-N-104`'s system turn changed with the composed prompt) |
+| optimizer steps, cap 200 | 120 | **62 per epoch × 3 = 186**, `fits_cap: true` |
+
+The rebalance block, quoted:
+
+```
+"free_text_train": 147, "base_composed_train": 13, "expression": "round(0.4 / 0.6 * 147)",
+"product": 98.0, "rounded": 98, "copies_added": 85, "copies_per_row": 6, "remainder": 7,
+"counts": {"7": 6, "8": 7}, "repeat_factor": 7.5385,
+"extra_copy_ids": ["T-N-89", "T-N-97", "T-N-99", "T-N-100", "T-N-105", "T-N-106", "T-N-107"]
+```
+
+The rendered base fell from 289,759 to 280,701 (arithmetic: the 14 composed rows
+now carry the shorter composed prompt instead of the teacher prompt), while the
+stored-mask total held at 17,748. No free-text record changed shape; the prompt
+digests in the manifest are `free_text b009947d…`, `composed e761165d…`.
+
+## The retrain
+
+Run `full-20261113T205627Z`, log `out/modal-train2.log`; the Volume record
+`/vol/runs/full-20261113T205627Z/run.json` is printed at the end of that log, and
+every figure below comes from it.
+
+| | value |
+|---|---|
+| GPU | `NVIDIA A100-SXM4-40GB`, 39.5 GB |
+| data seen by the run | 263 records, `bfe5bb3e61676dd4`, 245 train / 18 val, 310,100 tokens, longest 2540 (max 2560) |
+| epochs / optimizer steps | 3 / **186** (planned 186, `cap 200`) |
+| loss, first five points / last five points | 0.2042 / 0.0850 |
+| loss, step 1 → step 186 | 0.2757 → 0.0994 |
+| wall / per optimizer step | 1174.7 s / 6.18 s |
+| peak VRAM | 21.22 GB |
+| adapter | r=16, alpha=16, dropout 0, 496 modules, **116,727,808** trainable parameters, 992 tensors changed |
+| EOS | 427 `<|im_end|>` tokens across 427 supervised spans, in memory only |
+| supervision, run total | 19,693 stored-mask tokens + 427 EOS = **20,120**; train split **18,260** |
+| gradient norm, max / mean | 2.3396 / 0.4177 |
+| micro-batches / optimizer seconds | 735 / 1149.7 |
+| status | `ok` |
+| adapter path | `/vol/runs/full-20261113T205627Z/adapter` |
+
+The run measured its loss on 18,260 supervised tokens, 5.9 % of 310,100. That is
+the denominator for the 0.0850; it is not 19,693 and not 20,120.
+
+## The check that closed it
+
+Both checks load the adapter in a fresh container, run the project's own
+validator (`shopagent.compose._check_plan`) and compare against the case's
+`required_calls`.
+
+`out/modal-check2.log` — single-case probe, $0.0695, wall 98.4 s:
+
+```
+adapter: /vol/runs/full-20261113T205627Z/adapter; peft names ['default'], active ['default']
+adapter: 116727808 trainable parameters (trained count 116727808)
+adapter: ...layers.0.linear_attn.out_proj.lora_B.default.weight ... is torch.equal to ... in adapter_model.safetensors
+```
+
+Prompt 1,151 chars. Raw output, unchanged:
+
+```
+{"action": "refund", "amount_cents": 2100, "order_id": "ORD-1059"}<|im_end|>
+```
+
+`parse: ok`; `matches required_calls: True {'action': True, 'amount_cents': True, 'order_id': True}`.
+The same log's free-text probe N-31 printed a plausible reply (4,461-char prompt)
+and was not scored.
+
+`out/modal-check3.log` — every composed case in the SFT file, $0.0848, wall
+120.0 s:
+
+```
+N-82   ok    True      N-97   ok    True      N-103  ok    True
+N-88   ok    True      N-99   ok    True      N-104  ok    True
+N-89   ok    True      N-100  ok    True      N-105  ok    True
+                       N-101  ok    True      N-106  ok    True
+                       N-102  ok    True      N-107  ok    True
+                                                N-108  ok    True
+summary: 14/14 parse ok, 14/14 match required_calls
+```
+
+The case list is built from the dataset (`composed_case_ids()` in
+`train/modal_app.py`), so it is the set the student was trained on, not a sample
+chosen to pass. The split, stated exactly: **13 of these 14 cases were in the
+training split**; **N-104 is the validation row** (the only composed record in
+the 18-row val split). So 14/14 **includes one case the adapter never trained
+on**. That one row does not make the check a generalisation measure: N-104 comes
+from the same corpus and the same teacher brief. What 14/14 measures is the
+output schema across 14 composed cases.
+
+**The two check logs predate the corrected banner.** Both were run before
+`CHECK_BANNER` and `CHECK_SUITE_NOTE` in `train/modal_app.py` were changed, so
+`out/modal-check2.log` and `out/modal-check3.log` still print the older text:
+`every case here is training-split and was seen` and `every case here was seen in
+training`. Read those lines as the old claim; the banner now says 13 of the 14
+composed cases trained and N-104 was the val row. The per-case table above is the
+measurement, and it does not change. The logs are not rewritten: a log is a
+record of what ran.
+
+## Spend
+
+`kind: estimated` — GPU, CPU and memory for the wall time at list rates; it
+excludes adapter save and Volume commit, so it is not the bill.
+
+| Run | Log | Estimated cost |
+|---|---|---|
+| full retrain (`full-20261113T205627Z`) | `out/modal-train2.log` | $0.8299 (gpu $0.6849, cpu $0.0616, memory $0.0835) |
+| single-case check | `out/modal-check2.log` | $0.0695 |
+| composed suite check | `out/modal-check3.log` | $0.0848 |
+| **sum of these three** | | **$0.9842** |
+
+Each run also prints its bound before it starts: `cap $3.39` for the retrain
+(gpu $2.798 + cpu $0.252 + memory $0.341 at the timeout), $0.85 for check 2. The
+three earlier estimates in milestone 4 total $1.0423. The metered figure for the
+month was last read as **$5.99564250**, billed **$0.00** (credits cover it); it
+is read from the Modal dashboard, not from this repo, and this session did not
+re-read it.
+
+## Not proven
+
+- **All 14 cases are seen, so 14/14 measures the schema across cases, not
+  generalisation.** The split, stated exactly: **13 of the 14 composed cases
+  were in the training split** (13 base rows, 85 repeats), and **N-104 is the
+  validation row** — `T-N-104` is the single composed record in the 18-row val
+  split. So 14/14 **includes one case the adapter never trained on**. That one
+  case widens the evidence by exactly one row; it does not turn the check into a
+  generalisation measure, because N-104 is still a scenario from the same corpus,
+  written by the same teacher under the same brief. What was measured is the
+  output schema across 14 composed cases. What was not measured is behaviour on
+  cases the corpus never contained.
+- **The composed property still belongs to the gate and renderer.** The student
+  now emits a plan that parses; nothing constrains it to the *right* plan. A
+  model that picks the wrong action still causes a wrong action, and the bench's
+  20 composed cases still test the renderer.
+- **A 40 % share buys shape, not coverage.** 98 instances are 85 copies of 13
+  rows. Repetition teaches the output contract; it adds no new ticket, no new
+  action and no address-change trace (N-86, N-109, N-110 are unchanged from
+  milestone 3).
+- **No score exists.** Base 27B and 27B + adapter are unscored on the frozen
+  bench and both holdouts; Phase B is unwired. 14/14 is a load-and-shape check.
+- **Loss fell on seen data.** 0.2042 → 0.0850 (first and last five logged
+  points) says the model fitted 18,260 supervised tokens. It is not a behaviour
+  claim, and no val number is quoted.
+- **The pin drift is resolved.** The suite went red on
+  `tests/test_sft.py::ModePrompts::test_train_app_pin_matches_the_app_file`
+  because `shopagent/sft.py:87` still held the previous digest `5cab4f46…` while
+  `train/modal_app.py:74` held `bfe5bb3e…`. The constant was repinned, the
+  dataset regenerated to the same bytes, and `train_app_pin.matches_output` is
+  `true`; the suite is green below.
+- `Unverified:` the exact `modal run …` line for the retrain and both checks.
+  Each log begins after submission.
+- **Not accepted.** The fresh-context verdict is outstanding.
+
+## Gates on this tree
+
+Run after both doc passes, the pin fix, the golden free-text test and the banner
+fix, on the final tree.
+
+| Command | Exit | Result |
+|---|---|---|
+| `python -m shopagent.sft` | 0 | 178 source records → 263 written rows, digest `bfe5bb3e61676dd4`; `matches_output: true` |
+| `python -m unittest discover -s tests -q` | 0 | `Ran 275 tests` · `OK` |
+| `git diff --check` | 0 | no output |
+
+The regeneration wrote the same `sft.jsonl` bytes the run consumed
+(`bfe5bb3e61676dd4079cf2f81285ed82b9219b2659913924a6a20f7c2bd0e9cc`), so the
+dataset pin, the adapter and both checks still name one artifact. The suite was
+red before the pin fix and green after it: the pin test is the gate that caught a
+stale constant, which is the behaviour it exists for.
+
+The free-text digest test carries a sensitivity check of its own: a one-token
+change in the converter's render step moves the 164-record digest from
+`9519a868…87479` to `bf7ce7cb…135f68`, so it fails for a real regression, not
+only for an edited constant.
+
+## Open
+
+- **Wire Phase B** (stage 4), then evaluate base 27B and 27B + adapter on the
+  frozen bench and both holdouts.
+- Nothing committed.
 
 # Milestone 3 — teacher corpus (2026-11-13)
 

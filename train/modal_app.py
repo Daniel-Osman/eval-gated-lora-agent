@@ -71,7 +71,7 @@ TORCH_VERSION = "2.14.1"
 
 DATASET_LOCAL = REPO_ROOT / "data" / "sft" / "sft.jsonl"
 DATASET_REMOTE = "/root/sft.jsonl"
-DATASET_SHA256 = "5cab4f46a0ade4f8db2535773c8bff015c1ef99885d02c65bbaef0d9134850fb"
+DATASET_SHA256 = "bfe5bb3e61676dd4079cf2f81285ed82b9219b2659913924a6a20f7c2bd0e9cc"
 
 VOLUME_NAME = "eval-gated-lora-agent"
 VOLUME_MOUNT = "/vol"
@@ -81,7 +81,7 @@ HF_HOME = f"{VOLUME_MOUNT}/hf"
 # Shape of the run.
 MAX_SEQ_LEN = 2560  # longest record is 2540 tokens; nothing is truncated
 BATCH_SIZE = 1
-GRAD_ACCUM = 4  # 160 train rows / 1 / 4 = 40 optimizer steps per epoch, 120 over 3 epochs
+GRAD_ACCUM = 4  # 245 train rows / 1 / 4 = 62 optimizer steps per epoch, 186 over 3 epochs
 EPOCHS = 3
 LOG_EVERY = 10  # loss log stride in optimizer steps; the first and last five logs are the windows
 LEARNING_RATE = 1e-4
@@ -102,16 +102,21 @@ CPU_CORES = 4.0
 MEMORY_MIB = 32 * 1024
 
 # Load-and-shape check: one trained run, two frozen cases, no training.
-CHECK_RUN_ID = "full-20261113T180308Z"
+CHECK_RUN_ID = "full-20261113T205627Z"
 CHECK_ADAPTER_REMOTE = f"{RUNS_DIR}/{CHECK_RUN_ID}/adapter"
 CHECK_CASE_COMPOSED = "N-105"  # refund ORD-1059 for 2100 cents; train split; no holdout row names it
 CHECK_CASE_FREE_TEXT = "N-31"  # "What is the status of ORD-1013?"; train split; no holdout row names it
 CHECK_MAX_NEW_TOKENS = 256
 CHECK_TIMEOUT_SECONDS = 1200
-CHECK_TRAINABLE_PARAMS = 116_727_808  # the count run.json records for the trained adapter
+CHECK_TRAINABLE_PARAMS = 116_727_808  # the count full-20261113T205627Z's run.json records
 CHECK_BANNER = (
-    "load-and-shape check, not a quality claim: every case here is training-split and was seen, "
-    "so agreement proves the weights and the prompt format load, nothing more"
+    "load-and-shape check, not a quality claim: 13 of the 14 composed cases were in the training "
+    "split and N-104 is the validation row, so agreement proves the weights and the prompt format "
+    "load, nothing more"
+)
+CHECK_SUITE_NOTE = (
+    "13 of these 14 composed cases trained and N-104 was the val row; every case here was seen, "
+    "so this measures the schema across cases, not generalisation"
 )
 
 # Modal list prices, https://modal.com/pricing (read 2026-11-13).
@@ -513,16 +518,22 @@ def train(smoke: bool = False) -> dict:
     order = list(range(len(train_rows)))
     train_started = time.time()
     updates = 0
+    micro_batches = 0
     micro_losses: list[float] = []
     logged: list[tuple[int, float]] = []
     grad_norms: list[float] = []
 
     for epoch in range(EPOCHS):
         rng.shuffle(order)
-        print(f"epoch {epoch + 1}/{EPOCHS}: {len(order)} records, {len(order) // GRAD_ACCUM} steps", flush=True)
+        print(
+            f"epoch {epoch + 1}/{EPOCHS}: {len(order)} records, "
+            f"{math.ceil(len(order) / GRAD_ACCUM)} steps",
+            flush=True,
+        )
         for start in range(0, len(order), GRAD_ACCUM):
             batch = [train_rows[index] for index in order[start : start + GRAD_ACCUM]]
             for row in batch:
+                micro_batches += 1
                 input_ids = torch.tensor([row["input_ids"]], dtype=torch.long, device=device)
                 labels = torch.tensor([row["labels"]], dtype=torch.long, device=device)
                 output = model(input_ids=input_ids, labels=labels, use_cache=False)
@@ -624,7 +635,7 @@ def train(smoke: bool = False) -> dict:
         },
         "training": {
             "optimizer_steps": updates,
-            "micro_batches": updates * GRAD_ACCUM,
+            "micro_batches": micro_batches,
             "planned_steps": planned,
             "loss_first_log": logged[0][1],
             "loss_last_log": logged[-1][1],
@@ -720,6 +731,39 @@ def check_prompt(text: str, case_id: str, tokenizer, input_ids: list[int]) -> st
     if ids != input_ids[: len(ids)]:
         raise RunError(f"check_prompt: {case_id} prompt does not tokenize to its training id prefix")
     return prompt
+
+
+def training_target(text: str, case_id: str) -> dict:
+    """The plan the record trains for: the assistant content after its think block."""
+    marker = text.rindex(ASSISTANT_TURN + "\n")
+    stop = text.find(THINK_CLOSE + "\n\n", marker)
+    if stop < 0:
+        raise RunError(f"check_target: {case_id} has no empty {THINK_OPEN} block")
+    content = text[stop + len(THINK_CLOSE + "\n\n") :].strip()
+    if content.endswith(IM_END):
+        content = content[: -len(IM_END)].strip()
+    try:
+        target = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RunError(f"check_target: {case_id} target is not JSON: {exc}") from exc
+    if not isinstance(target, dict):
+        raise RunError(f"check_target: {case_id} target is {type(target).__name__}, not an object")
+    return target
+
+
+def composed_verdict(case: dict, plan: dict | None) -> tuple[bool, str]:
+    """The project's own check: action, ids and amount against `required_calls`."""
+    if plan is None:
+        return False, "no plan to check"
+    from shopagent.corpus import InvalidPlan, PlanMismatch, _check_composed_plan
+
+    try:
+        action = _check_composed_plan(case, plan)
+    except InvalidPlan as exc:
+        return False, f"invalid plan: {exc}"
+    except PlanMismatch as exc:
+        return False, f"plan mismatch: {exc}"
+    return True, f"action {action} matches required_calls"
 
 
 def _adapter_key(name: str) -> str:
@@ -882,33 +926,57 @@ def check_adapter(cases: dict) -> dict:
     )
 
     results = {}
+    table = []
     for case_id, meta in cases.items():
         prompt = check_prompt(by_case[case_id]["text"], case_id, tokenizer, by_case[case_id]["input_ids"])
-        print(f"\n==== {case_id} {meta['kind']} prompt, {len(prompt)} chars ====", flush=True)
-        print(prompt, flush=True)
-        print(f"==== end {case_id} prompt ====", flush=True)
+        if meta["kind"] == "free_text":
+            print(f"\n==== {case_id} {meta['kind']} prompt, {len(prompt)} chars ====", flush=True)
+            print(prompt, flush=True)
+            print(f"==== end {case_id} prompt ====", flush=True)
         raw = generate(model, tokenizer, prompt, im_end_id)
-        print(f"==== {case_id} raw output ====", flush=True)
-        print(raw, flush=True)
-        print(f"==== end {case_id} output ====", flush=True)
         entry = {"kind": meta["kind"], "prompt_chars": len(prompt), "output": raw}
         if meta["kind"] == "composed":
             plan, verdict = parse_plan(raw)
-            expected = meta["expected_plan"]
-            print(f"parse: {verdict}", flush=True)
-            if plan is None:
-                entry.update({"plan": None, "parse": verdict, "expected": expected, "matches": False})
-            else:
-                fields = {key: plan.get(key) == expected.get(key) for key in sorted(set(plan) | set(expected))}
-                print(f"plan: {json.dumps(plan, sort_keys=True)}", flush=True)
-                print(f"required_calls: {json.dumps(expected, sort_keys=True)}", flush=True)
-                print(f"matches required_calls: {plan == expected} {fields}", flush=True)
-                entry.update(
-                    {"plan": plan, "parse": verdict, "expected": expected, "matches": plan == expected, "fields": fields}
-                )
+            target = training_target(by_case[case_id]["text"], case_id)
+            matched, why = composed_verdict(meta["case"], plan)
+            entry.update(
+                {
+                    "parse": verdict,
+                    "target": target,
+                    "plan": plan,
+                    "matches": matched,
+                    "verdict": why,
+                    "equals_target": plan == target,
+                }
+            )
+            table.append((case_id, verdict == "ok", matched))
+            if not matched:
+                print(f"\n==== {case_id} FAILED: prompt, {len(prompt)} chars ====", flush=True)
+                print(prompt, flush=True)
+                print(f"==== {case_id} raw output ====", flush=True)
+                print(raw, flush=True)
+                print(f"==== end {case_id} output ====", flush=True)
+                print(f"{case_id} parse: {verdict}", flush=True)
+                print(f"{case_id} plan: {json.dumps(plan, sort_keys=True)}", flush=True)
+                print(f"{case_id} verdict: {why}", flush=True)
+                print(f"{case_id} trained target: {json.dumps(target, sort_keys=True)}", flush=True)
         else:
+            print(f"==== {case_id} raw output ====", flush=True)
+            print(raw, flush=True)
+            print(f"==== end {case_id} output ====", flush=True)
             print(f"{case_id}: free text, printed and not scored", flush=True)
         results[case_id] = entry
+
+    if table:
+        print("\n==== composed suite: case, parse, match ====", flush=True)
+        for case_id, parsed, matched in table:
+            print(f"{case_id:<6} {'ok' if parsed else 'FAIL':<5} {matched}", flush=True)
+        parsed_ok = sum(1 for _, parsed, _ in table if parsed)
+        matched = sum(1 for _, _, match in table if match)
+        print(
+            f"summary: {parsed_ok}/{len(table)} parse ok, {matched}/{len(table)} match required_calls",
+            flush=True,
+        )
 
     elapsed = time.time() - started
     cost = worst_case_usd(elapsed)
@@ -924,32 +992,51 @@ def check_adapter(cases: dict) -> dict:
         flush=True,
     )
     print(f"check: {CHECK_BANNER}", flush=True)
+    print(f"check: {CHECK_SUITE_NOTE}", flush=True)
     return {
         "run_id": CHECK_RUN_ID,
         "adapter": proof,
         "cases": results,
+        "summary": {
+            "composed_total": len(table),
+            "composed_parse_ok": sum(1 for _, parsed, _ in table if parsed),
+            "composed_match": sum(1 for _, _, matched in table if matched),
+        },
         "hardware": hardware,
         "time": {"wall_seconds": round(elapsed, 1)},
         "cost": cost,
         "banner": CHECK_BANNER,
+        "suite_note": CHECK_SUITE_NOTE,
     }
 
 
-def check_payload() -> dict:
-    """The two frozen cases, read here so the image needs no copy of `bench/`."""
-    from shopagent.bench import load_all_cases
-    from shopagent.cli import plan_from_case
+def composed_case_ids() -> list[str]:
+    """Every composed case in the SFT dataset: the suite is what was trained on."""
+    ids = []
+    for line in DATASET_LOCAL.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row["path"] == "composed" and row["case"] not in ids:
+            ids.append(row["case"])
+    if not ids:
+        raise RunError("check_cases: the SFT dataset has no composed row")
+    return sorted(ids)
 
-    wanted = {CHECK_CASE_COMPOSED: "composed", CHECK_CASE_FREE_TEXT: "free_text"}
+
+def check_payload() -> dict:
+    """The composed suite plus one free-text case; the case dict travels for the validator."""
+    from shopagent.bench import load_all_cases
+
+    composed = composed_case_ids()
+    wanted = {case_id: "composed" for case_id in composed}
+    wanted[CHECK_CASE_FREE_TEXT] = "free_text"
     payload = {}
     for case in load_all_cases():
         kind = wanted.get(case["id"])
         if kind is None:
             continue
-        entry = {"kind": kind, "ticket": case["ticket"], "required_calls": case["required_calls"]}
-        if kind == "composed":
-            entry["expected_plan"] = plan_from_case(case)
-        payload[case["id"]] = entry
+        payload[case["id"]] = {"kind": kind, "case": case}
     missing = sorted(set(wanted) - set(payload))
     if missing:
         raise RunError(f"check_cases: {missing} are not in bench/cases")
@@ -966,7 +1053,7 @@ def main(smoke: bool = False, check: bool = False):
             f"check {CHECK_RUN_ID}: adapter {CHECK_ADAPTER_REMOTE}, gpu {GPU}, "
             f"timeout {CHECK_TIMEOUT_SECONDS}s; worst case ${bound['total_usd']:.2f}"
         )
-        print(f"cases: {json.dumps(payload, sort_keys=True)}")
+        print(f"cases: {len(payload)} — {', '.join(sorted(payload))}")
         print(json.dumps(check_adapter.remote(payload), indent=2, sort_keys=True))
         return
     bound = worst_case_usd()

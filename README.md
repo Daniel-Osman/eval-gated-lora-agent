@@ -14,8 +14,9 @@ reply that says "I've refunded your order" is rejected.
 
 **Stage: incubator, harness plus one adapter.** `SPEC.md` holds the locked plan:
 27B student, Modal compute, DeepSeek teacher and judge. A QLoRA adapter now
-exists on the Modal Volume (`full-20261113T180308Z`), not in this repo, and it
-was loaded back once and probed; no benchmark score exists for it. A teacher
+exists on the Modal Volume (`full-20261113T205627Z`), not in this repo; it was
+loaded back and driven on 14 composed cases and one free-text case, and it is
+scored on none of them. A teacher
 corpus exists: 178 admitted traces of 284 frozen cases, from a full pass plus a
 resumed pass after a brief change, gated, manifested and leak-checked (see
 below). Everything else measures the harness against a scripted fake agent,
@@ -25,9 +26,13 @@ and a third-party 32-case unseen set that measured 12/32 caught. No number here
 is model performance. Bench scores after this corpus are **seen-scenario**
 scores, not generalisation; the two holdouts are the outside check.
 
-**Composed mode has no working student output yet.** The trained student wrote
-the free-text plan list where the composed plan was due, so the validator
-refused it. That is a fact about the model, not about the renderer. See
+**Composed mode has a student output now, on seen cases only.** The retuned
+student returns the composed plan object for all 14 composed cases in the
+corpus (`out/modal-check3.log`), where the previous adapter returned a free-text
+plan list. The fix was one system prompt per mode plus a solved 40 % composed
+share of each epoch. Every case was seen: 13 in the training split, N-104 as the
+val row. So this measures the output schema across cases, not generalisation,
+and the no-false-claim property still belongs to the renderer. See
 `docs/COMPOSED-MODE.md`.
 
 ## The rule this project is built on
@@ -316,12 +321,15 @@ This is the only mode with a provable no-false-claim property. It constrains the
 sentence, not the choice: a model that picks the wrong action still causes a
 wrong action, and only Phase B can widen prose coverage.
 
-**The limit:** composed mode has no working student output yet. On the
-training-split case N-105 the tuned student emitted the free-text plan list
-instead of the composed plan, and the validator refused it with
-`unknown action None`. 14 composed rows against 164 free-text rows under one
-shared system prompt taught the dominant shape; the renderer is proven, the
-student is not. The fix is an open decision. See `docs/COMPOSED-MODE.md`.
+**The limit:** composed mode has a working student output, and it is measured on
+seen cases only. The tuned student returns `{"action": "refund", "amount_cents":
+2100, "order_id": "ORD-1059"}` for the training-split case N-105, where the
+first adapter returned the free-text plan list and the validator refused it with
+`unknown action None` (`out/modal-check2.log`). All 14 composed cases in the
+corpus parse and match `required_calls` (`out/modal-check3.log`); 13 were in the
+training split and N-104 was the val row, so 14/14 covers the schema, not
+generalisation. The no-false-claim property is still the renderer's. See
+`docs/COMPOSED-MODE.md`.
 
 ## Numbers, with the command that produced each
 
@@ -349,10 +357,13 @@ added 2026-11-13.
 | Teacher corpus generated | `python -m shopagent.cli teacher --out data --session-id teacher-20261113T011445Z` | 284 attempted, 52 admitted, 232 rejected, 512 requests, 899 s, exit 0 |
 | Teacher corpus resumed | `python -m shopagent.cli teacher --out data --resume --session-id teacher-20261113T011445Z` | 232 re-run, 126 admitted, 106 rejected, 463 requests, 490 s; corpus 178 of 284, exit 0 |
 | Teacher corpus manifest | `data/manifest.json` | 3 shards of 178 rows, `18ecdb3a…` / `89bacee4…` / `7e5f1cb0…`; template digest `68464655…7070f5`; `brief_revision` 2 (runs 1, 2); 92 holdout rows screened |
-| SFT conversion | `python -m shopagent.sft` | 178 records, 289,759 rendered tokens, `17,748` supervised (6.1 %), lengths 981 / 1700 / 2540, digest `5cab4f46…4850fb`, tokenizer `@8aa5f05d`, val 18 rows (overfit watch only); `data/sft/manifest.json` |
-| Training run | entrypoint `train` in `train/modal_app.py` → `out/modal-train.log` | `full-20261113T180308Z`: A100 40 GB, 3 epochs, 120 steps, loss 0.3892 → 0.1545 (points 0.7537 → 0.1571), 1045.8 s wall, peak 21.22 GB, `$0.7388`; adapter `/vol/runs/full-20261113T180308Z/adapter`; smoke `$0.2284`, total `$1.0423` |
-| Adapter loads as trained | entrypoint `check_adapter` → `out/modal-check.log` | `['default']` active; 116,727,808 trainable = trained count; one `lora_B` tensor `torch.equal` to the file; free-text N-31 plausible; composed N-105 **refused** `unknown action None`; `$0.0751` |
-| Test suite | `python -m unittest discover -s tests -q` | `Ran 255 tests` · `OK`, exit 0 |
+| SFT conversion | `python -m shopagent.sft` | 178 source records → **263 written rows**, 310,100 rendered tokens, **19,693** supervised (6.35 %), digest `bfe5bb3e…d0e9cc`, val 18 rows (overfit watch only); composed train share **40.00 %** (98 instances against 147 free text), 62 steps per epoch × 3 = 186; `data/sft/manifest.json` |
+| Training run (first) | entrypoint `train` in `train/modal_app.py` → `out/modal-train.log` | `full-20261113T180308Z`: A100 40 GB, 3 epochs, 120 steps, loss 0.3892 → 0.1545 (points 0.7537 → 0.1571), 1045.8 s wall, peak 21.22 GB, `$0.7388`; adapter `/vol/runs/full-20261113T180308Z/adapter`; smoke `$0.2284`, total `$1.0423` |
+| Training run (retrain, composed fix) | same entrypoint → `out/modal-train2.log` | `full-20261113T205627Z`: 3 epochs, **186 steps**, loss 0.2042 → 0.0850 (points 0.2757 → 0.0994), 1174.7 s wall, 6.18 s/step, peak 21.22 GB, `$0.8299`, cap `$3.39`; adapter `/vol/runs/full-20261113T205627Z/adapter` |
+| Adapter loads as trained (first) | entrypoint `check_adapter` → `out/modal-check.log` | `['default']` active; 116,727,808 trainable = trained count; one `lora_B` tensor `torch.equal` to the file; free-text N-31 plausible; composed N-105 **refused** `unknown action None`; `$0.0751` |
+| Composed plan, one case | same entrypoint → `out/modal-check2.log` | `full-20261113T205627Z` adapter; N-105 raw `{"action": "refund", "amount_cents": 2100, "order_id": "ORD-1059"}`; parse ok, three fields match `required_calls`; `lora_B` `torch.equal`; `$0.0695` |
+| Composed plan, every composed case | same entrypoint → `out/modal-check3.log` | **14/14 parse, 14/14 match**; 13 cases in the training split, N-104 the val row; seen-case schema check only; `$0.0848` |
+| Test suite | `python -m unittest discover -s tests -q` | `Ran 275 tests` · `OK`, exit 0 |
 | Benchmark frozen | `python -m shopagent.cli verify-frozen` | `benchmark frozen: OK`, exit 0 |
 | Leak check over the corpus | `python -m shopagent.cli leakcheck --corpus data/train` | `178 sessions`, 284 cases, 92 holdout replies, four match lists empty, closest pair 0.75, `leak check: CLEAN`, exit 0 |
 
@@ -398,6 +409,9 @@ Proven by commands in this repo:
 - The leak check searches the serialized record, so a holdout reply is found in
   a nested field, a split token list or a JSONL array line
   (`tests/test_leakcheck.py`).
+- The composed fix moved composed rows only: the 164 free-text records, in source
+  order, hash to `9519a868…87479`, the pre-fix value
+  (`tests/test_sft.py::RealCorpus::test_free_text_records_hash_to_the_pre_fix_digest`).
 - The teacher corpus is gated before it is stored: a trace reaches a shard only
   after the gate returns `APPROVED`; a reject keeps its reason code and both raw
   responses; a bench-ticket or holdout collision is dropped and counted; a
@@ -429,18 +443,24 @@ Not proven yet:
   against unseen wording. The fixed suites and the remediation-targeted holdout
   do not change that.
 - Any model's behaviour. One adapter exists on the Modal Volume; it loads back
-  as trained, but it was probed with two seen cases and scored on none. No
-  benchmark number, no base-model comparison.
-- **The loss was measured on 16,230 supervised tokens**, the train split after
-  the in-memory EOS extension, 5.6 % of 289,759. The file's masks hold 17,748
-  across both splits; the Volume record holds 18,090 with EOS. It fell to 0.1545,
-  which says the model fitted those tokens, not that it learned a plan shape.
-  Whether that volume teaches behaviour is untested.
+  as trained and returns a matching composed plan on 14 seen cases. It is scored
+  on none of them: no benchmark number, no base-model comparison.
+- **The loss is measured on 18,260 supervised tokens** in the retrain, the train
+  split after the in-memory EOS extension, 5.9 % of 310,100. The file's masks
+  hold 19,693 across both splits; the Volume record holds 20,120 with EOS. It
+  fell to 0.0850, which says the model fitted those tokens. The only behaviour
+  evidence is the 14/14 composed schema check, and that covers seen cases. (The
+  first run measured 16,230 of 289,759 and fell to 0.1545.)
 - **Composed mode does not support address text.** An address plan names an
   existing row; it cannot write a new street, city or postcode. Address changes
   remain a free-text problem.
 - **Composed mode constrains the sentence, not the choice.** A model that picks
   the wrong action still causes a wrong action.
+- **The composed student is proven on the schema, not beyond it.** 14 of 14
+  composed cases parse and match, but 13 sat in the training split and N-104 is
+  the val row, so the set is 14 seen scenarios and one of them never trained.
+  Nothing here shows a plan for a case the corpus never held, and the
+  no-false-claim property remains the renderer's.
 - Phase B. The contract, parser and fail-closed path exist; no judge model is
   wired. Free-text coverage beyond the tested phrasings must come from Phase B,
   and it does not exist yet. Free-text coverage is unsolved, not merely
@@ -480,8 +500,10 @@ Next, in order:
    2026-11-13: the 99-reject gate cluster stayed strict by Daniel's call.
 3. Unsloth QLoRA run on Modal with config, loss curve, VRAM, wall time and the
    adapter saved to a Modal Volume. **Done** — 120 steps, 1045.8 s, 21.22 GB
-   peak, $0.7388, adapter `full-20261113T180308Z`. The composed format is still
-   open; no plan shape was learned for it.
+   peak, $0.7388, adapter `full-20261113T180308Z`. Then retrained after the
+   composed fix: 186 steps, 1174.7 s, 21.22 GB peak, $0.8299, adapter
+   `full-20261113T205627Z`; the composed plan now parses and matches on 14 seen
+   cases. The composed shape is learned; its choice of action is not tested.
 4. Wire Phase B: the judge is where free-text coverage beyond the tested
    phrasings must come from. Until it is real, free-text mode stays at the
    measured 12/32.
