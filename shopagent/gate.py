@@ -10,9 +10,11 @@ draft; nothing reaches the customer-visible ``replies`` table until Phase A (and
 Phase B, when enabled) approves. A rejection writes no reply. An unverifiable
 claim escalates straight to ``human_queue`` with its draft.
 
-Phase B is a stubbed interface today (see `judge.py`). The retry loop is real:
-a rejection feeds the reason back, up to three attempts, then the ticket goes to
-a human queue instead of looping.
+Phase B is the DeepSeek judge (see `judge.py`); it runs only after Phase A has
+found nothing, so Phase A keeps its own semantics. A rejection feeds the judge's
+reason back, up to three attempts, then the ticket goes to a human queue instead
+of looping. Every off-contract judge answer, and a transport failure after its
+retries, escalates.
 """
 
 from __future__ import annotations
@@ -23,18 +25,29 @@ from dataclasses import dataclass, field
 
 from .claims import ClaimResult, check_tokens, evaluate_claims, parse_claims
 from .compose import ComposeError, compose_reply
-from .db import insert, now_iso, one, rows
-from .judge import JudgeUnavailable, JudgeVerdict, parse_judge_output, stub_judge
+from .db import audit_after, insert, last_audit_seq, now_iso, one, rows
+from .judge import JudgeUnavailable, JudgeVerdict, check_verdict, parse_judge_output
 from .referee import diff, snapshot
 
 MAX_ATTEMPTS = 3
 
-JUDGE_CODES = frozenset({"JUDGE_UNAVAILABLE", "JUDGE_INVALID", "JUDGE_REJECTED"})
+JUDGE_CODES = frozenset(
+    {"JUDGE_UNAVAILABLE", "JUDGE_INVALID", "JUDGE_REJECTED", "JUDGE_ESCALATED"}
+)
 
 # Codes that send the draft to a human instead of failing it outright. Anything
 # not listed here is a rejection: the reply is contradicted, and a retry with a
-# corrected answer is possible.
-ESCALATE_CODES = frozenset({"UNVERIFIED_CLAIM", "CLAIM_ENTITY_UNBOUND", "JUDGE_INVALID"})
+# corrected answer is possible. Every Phase B non-answer and the judge's own
+# ESCALATED go to a human: no second opinion exists to retry against.
+ESCALATE_CODES = frozenset(
+    {
+        "UNVERIFIED_CLAIM",
+        "CLAIM_ENTITY_UNBOUND",
+        "JUDGE_INVALID",
+        "JUDGE_UNAVAILABLE",
+        "JUDGE_ESCALATED",
+    }
+)
 
 
 @dataclass
@@ -43,6 +56,9 @@ class Decision:
     codes: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
     phase: str = "A"
+    # One record per judge call that Phase B made: model, gateway, case id,
+    # checked_at, verdict, reason. A failed call leaves one too.
+    provenance: list[dict] = field(default_factory=list)
 
     @property
     def approved(self) -> bool:
@@ -58,6 +74,7 @@ class Decision:
             "codes": self.codes,
             "reasons": self.reasons,
             "phase": self.phase,
+            "provenance": self.provenance,
         }
 
 
@@ -84,37 +101,74 @@ def _check_invariants(conn: sqlite3.Connection) -> list[str]:
     return problems
 
 
+def _no_judge(**_: object) -> JudgeVerdict:
+    """Phase B is on and nothing was injected. Fail closed, do not approve."""
+    raise JudgeUnavailable("Phase B is enabled but no judge was injected")
+
+
 def _run_phase_b(
-    judge, *, ticket: str, calls: list[dict], reply: str, changes: dict
-) -> tuple[list[str], list[str]]:
-    """Returns (codes, reasons). Fails closed on invalid or missing judge output."""
+    judge, *, case_id: str, calls: list[dict], reply: str, changes: dict
+) -> tuple[list[str], list[str], list[dict]]:
+    """Returns (codes, reasons, provenance). Fails closed on any judge failure.
+
+    The prompt carries the execution log and the draft reply only: no ticket,
+    no gate code, no phrase list, no expected verdict.
+    """
     state = {
         table: {"added": change.get("added", []), "changed": change.get("changed", [])}
         for table, change in changes.items()
     }
-    prompt = {
-        "ticket": ticket,
-        "calls": calls,
-        "reply": reply,
-        "state": state,
-    }
     try:
-        output = judge(**prompt)
+        output = judge(case_id=case_id, calls=calls, reply=reply, state=state)
         verdict = output if isinstance(output, JudgeVerdict) else parse_judge_output(str(output))
+        verdict = check_verdict(verdict)
     except JudgeUnavailable as exc:
-        return ["JUDGE_UNAVAILABLE"], [f"JUDGE_UNAVAILABLE: {exc}"]
+        return ["JUDGE_UNAVAILABLE"], [f"JUDGE_UNAVAILABLE: {exc}"], _record(exc)
     except (ValueError, TypeError) as exc:
-        return ["JUDGE_INVALID"], [f"JUDGE_INVALID: {exc}"]
-    # Only the two exact enum values are a decision. "MAYBE", "" or any other
-    # typed verdict is not an approval: it escalates.
+        return ["JUDGE_INVALID"], [f"JUDGE_INVALID: {exc}"], _record(exc)
+
+    provenance = [
+        {
+            "model": verdict.model,
+            "gateway": verdict.gateway,
+            "case_id": verdict.case_id or case_id,
+            "checked_at": verdict.checked_at,
+            "verdict": verdict.verdict,
+            "reason": verdict.reason,
+        }
+    ]
     if verdict.verdict == "REJECTED":
-        return ["JUDGE_REJECTED"], [f"JUDGE_REJECTED: {verdict.reason}"]
-    if verdict.verdict != "APPROVED":
-        return (
-            ["JUDGE_INVALID"],
-            [f"JUDGE_INVALID: verdict {verdict.verdict!r} is not APPROVED or REJECTED"],
-        )
-    return [], []
+        return ["JUDGE_REJECTED"], [f"JUDGE_REJECTED: {verdict.reason}"], provenance
+    if verdict.verdict == "ESCALATED":
+        return ["JUDGE_ESCALATED"], [f"JUDGE_ESCALATED: {verdict.reason}"], provenance
+    return [], [], provenance
+
+
+def _record(exc: Exception) -> list[dict]:
+    """The failed call's provenance, when the client attached one."""
+    record = getattr(exc, "record", None)
+    return [record] if isinstance(record, dict) else []
+
+
+def _calls_since(conn: sqlite3.Connection, since: int) -> list[dict]:
+    """The execution log one attempt wrote: tool, args and the full result.
+
+    Read from the audit log rows, because that is where every tool call lands.
+    A read-only call leaves no state delta, so its result envelope must travel
+    or the judge cannot check a status reply.
+    """
+    calls: list[dict] = []
+    for row in audit_after(conn, since):
+        try:
+            args = json.loads(row["args_json"])
+        except (TypeError, json.JSONDecodeError):
+            args = {}
+        try:
+            result = json.loads(row["result_json"])
+        except (TypeError, json.JSONDecodeError):
+            result = {}
+        calls.append({"tool": row["tool"], "args": args, "result": result})
+    return calls
 
 
 def commit_reply(conn: sqlite3.Connection, *, ticket_id: str, reply: str) -> int:
@@ -160,12 +214,16 @@ def evaluate(
     if any(reason.startswith("STATE_INVARIANT") for reason in reasons) and "STATE_INVARIANT_VIOLATION" not in codes:
         codes.append("STATE_INVARIANT_VIOLATION")
 
+    # Phase B runs after Phase A approves, and only then: an unverifiable Phase
+    # A claim still escalates immediately, and a judge answer can never turn a
+    # Phase A rejection into a retry.
     phase = "A"
-    if phase_b and phase_b != "off":
+    provenance: list[dict] = []
+    if phase_b and phase_b != "off" and not codes:
         phase = "A+B"
-        judge_codes, judge_reasons = _run_phase_b(
-            judge or stub_judge,
-            ticket=ticket_text or ticket_id,
+        judge_codes, judge_reasons, provenance = _run_phase_b(
+            judge or _no_judge,
+            case_id=ticket_id,
             calls=calls or [],
             reply=reply,
             changes=changes,
@@ -183,7 +241,7 @@ def evaluate(
     else:
         verdict = "APPROVED"
 
-    decision = Decision(verdict, codes, reasons, phase)
+    decision = Decision(verdict, codes, reasons, phase, provenance)
     if decision.approved and commit:
         commit_reply(conn, ticket_id=ticket_id, reply=reply)
     return decision
@@ -264,6 +322,7 @@ def run_gated(
     reply = ""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         baseline = snapshot(conn)
+        since = last_audit_seq(conn)
         plan = propose(feedback)
         reply = compose_reply(conn, ticket_id=ticket_id, plan=plan) if composed else plan
         if not isinstance(reply, str) or not reply.strip():
@@ -275,6 +334,7 @@ def run_gated(
             baseline=baseline,
             phase_b=phase_b,
             judge=judge,
+            calls=_calls_since(conn, since),
             commit=True,
         )
         attempts.append(
@@ -284,6 +344,7 @@ def run_gated(
                 "codes": decision.codes,
                 "reasons": decision.reasons,
                 "reply": reply,
+                "provenance": decision.provenance,
             }
         )
         if record:

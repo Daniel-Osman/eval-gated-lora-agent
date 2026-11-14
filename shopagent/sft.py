@@ -40,7 +40,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .teacher import SYSTEM_PROMPT as FREE_TEXT_SYSTEM_PROMPT
+from .teacher import SYSTEM_PROMPT as TEACHER_SYSTEM_PROMPT
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = ROOT / "data" / "train"
@@ -79,12 +79,31 @@ Rules:
     "\n"
 )
 
+# The teacher prompt states no output shape: that instruction lived in the
+# teacher's brief, so a base-model miss on it measured format, not quality. The
+# student's free-text turn is the teacher prompt plus that shape, in plain words.
+FREE_TEXT_CONTRACT = """Your first answer is the tool plan. Return it as one JSON list and nothing else.
+Each entry is one object with exactly the keys "name" and "args", and the entries
+are the calls in the order they run:
+- [{"name": "get_order", "args": {"order_id": "ORD-1001"}}]
+- [{"name": "get_order", "args": {"order_id": "ORD-1001"}}, {"name": "refund_order", "args": {"order_id": "ORD-1001", "amount_cents": 2100}}]
+
+Rules:
+- Return a list, never one action object and never prose.
+- Use only the tool names above and exactly their argument names. A call that
+  takes no argument takes an empty object.
+- After the tool results, return the customer reply as plain text and nothing
+  else. It is not JSON.
+- The plan carries no reply, and the reply repeats no plan."""
+
+FREE_TEXT_SYSTEM_PROMPT = f"{TEACHER_SYSTEM_PROMPT}\n\n{FREE_TEXT_CONTRACT}"
+
 MODE_PROMPTS = {"free_text": FREE_TEXT_SYSTEM_PROMPT, "composed": COMPOSED_SYSTEM_PROMPT}
 
 # Copied from train/modal_app.py, where the trainer enforces them. The test
 # suite parses those literals back out of that file, so the two cannot drift.
-TRAIN_MAX_SEQ_LEN = 2560
-TRAIN_DATASET_PIN = "bfe5bb3e61676dd4079cf2f81285ed82b9219b2659913924a6a20f7c2bd0e9cc"
+TRAIN_MAX_SEQ_LEN = 2816  # measured: the longest free-text record is 2757 tokens with the contract
+TRAIN_DATASET_PIN = "da6ef8853cb8a8e34a83d992cc71b4d09a71cc91094339ef072c96ac30c7518f"
 
 IGNORE_INDEX = -100
 SEED = 20261113
@@ -350,7 +369,7 @@ def convert_row(tokenizer, row: dict, shard: str, revision: int) -> dict:
     if messages[2].get("content") != json.dumps(row.get("plan")):
         raise SftError("plan_text_mismatch", f"{label}: messages[2] is not json.dumps(plan)")
 
-    if messages[0].get("content") != FREE_TEXT_SYSTEM_PROMPT:
+    if messages[0].get("content") != TEACHER_SYSTEM_PROMPT:
         raise SftError(
             "system_prompt_drift",
             f"{label}: messages[0] is not the teacher system prompt; the mode marker is applied once, not stacked",
@@ -375,10 +394,8 @@ def convert_row(tokenizer, row: dict, shard: str, revision: int) -> dict:
     else:
         raise SftError("path", f"{label}: unknown path {path!r}")
 
-    rendered = messages
-    if path == "composed":
-        rendered = [dict(message) for message in messages]
-        rendered[0]["content"] = MODE_PROMPTS["composed"]
+    rendered = [dict(message) for message in messages]
+    rendered[0]["content"] = MODE_PROMPTS[path]
 
     text = render_chat(tokenizer, rendered)
     ids, spans = supervised_spans(text, rendered, tokenizer)
@@ -751,9 +768,18 @@ def build(
         },
         "prompts": {
             "free_text": {
-                "source": "shopagent.teacher.SYSTEM_PROMPT",
+                "source": "shopagent.teacher.SYSTEM_PROMPT + shopagent.sft.FREE_TEXT_CONTRACT",
                 "text": FREE_TEXT_SYSTEM_PROMPT,
                 "sha256": sha256_bytes(FREE_TEXT_SYSTEM_PROMPT.encode("utf-8")),
+                "superseded": [
+                    {
+                        "sha256": sha256_bytes(TEACHER_SYSTEM_PROMPT.encode("utf-8")),
+                        "reason": (
+                            "the free-text turn stated no output shape, so a base-model failure "
+                            "measured format, not quality"
+                        ),
+                    }
+                ],
             },
             "composed": {
                 "source": "shopagent.sft.COMPOSED_SYSTEM_PROMPT",

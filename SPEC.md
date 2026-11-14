@@ -115,9 +115,12 @@ Retry stops at 3. A fourth attempt is a human queue entry, not a loop.
 remains the only mode with a provable no-false-claim property. Phase B widens
 prose coverage; it does not make a guarantee. The doc must keep saying that.
 
-Open gap to close in stage 4: `shopagent/judge.py` is still a stub that names a
-local llama.cpp endpoint. Wiring it to the locked DeepSeek judge is stage 4
-work, and the stub's text is corrected in that change.
+Closed in stage 4: `shopagent/judge.py` is wired to
+`opencode-go/deepseek-v4.1-flash` through the shared client in `teacher.py`
+(gateway, key rule, session header and retries are one implementation). It runs
+after Phase A approves and only then. It stays off by default (`phase_b` unset)
+until the measure slice turns it on. Phase B widens prose coverage; it does not
+weaken the no-guarantee rule above.
 
 ## 6. Stages
 

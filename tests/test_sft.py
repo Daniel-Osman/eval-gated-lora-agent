@@ -44,10 +44,13 @@ TOOL_FAIL = json.dumps(
 )
 RENDERED_REPLY = "ORD-1037 is paid; the latest shipment is TRK1037 and it was returned."
 
-# The 164 free-text records as written by the run before the mode marker, one
-# `json.dumps(sort_keys=True, ensure_ascii=False)` line each, joined by "\n" and
-# closed with "\n". The composed prompt change must not move a single byte here.
-GOLDEN_FREE_TEXT_SHA256 = "9519a8683d87562186de773ea1ca1d027329f45e784b477bf0daabff95687479"
+# The 164 free-text records as written by the build with the free-text contract
+# in place, one `json.dumps(sort_keys=True, ensure_ascii=False)` line each, joined
+# by "\n" and closed with "\n". Supersedes b009947d…'s build digest
+# `9519a8683d87562186de773ea1ca1d027329f45e784b477bf0daabff95687479`, which was
+# taken before the free-text turn named its output shape: that prompt carried no
+# shape, so a base-model miss on it measured format, not quality.
+GOLDEN_FREE_TEXT_SHA256 = "0bb6d13347b42662287f105e2497640ca16ad3571d58894a12969c4ac077d85b"
 
 TOKENIZER = None
 
@@ -81,7 +84,7 @@ def free_row(
     stamp: str = STAMP_1,
 ) -> dict:
     messages = [
-        {"role": "system", "content": sft.FREE_TEXT_SYSTEM_PROMPT},
+        {"role": "system", "content": sft.TEACHER_SYSTEM_PROMPT},
         {"role": "user", "content": ticket},
         {"role": "assistant", "content": json.dumps(PLAN)},
     ]
@@ -110,7 +113,7 @@ def composed_row(
         "id": row_id,
         "kind": "normal",
         "messages": [
-            {"role": "system", "content": sft.FREE_TEXT_SYSTEM_PROMPT},
+            {"role": "system", "content": sft.TEACHER_SYSTEM_PROMPT},
             {"role": "user", "content": ticket},
             {"role": "assistant", "content": json.dumps(COMPOSED_PLAN)},
         ],
@@ -272,11 +275,14 @@ class ModePrompts(unittest.TestCase):
         self.assertIn("composed mode", system_body(record["text"]))
         self.assertIn("never write a customer reply", system_body(record["text"]))
         self.assertNotEqual(system_body(record["text"]), sft.FREE_TEXT_SYSTEM_PROMPT.strip())
-        self.assertEqual(row["messages"][0]["content"], sft.FREE_TEXT_SYSTEM_PROMPT)
+        self.assertEqual(row["messages"][0]["content"], sft.TEACHER_SYSTEM_PROMPT)
 
-    def test_free_text_rows_keep_the_teacher_prompt(self) -> None:
+    def test_free_text_rows_carry_the_teacher_prompt_plus_the_contract(self) -> None:
         record = convert_row(TOKENIZER, free_row(), "shard-000.jsonl", 1)
-        self.assertEqual(system_body(record["text"]), sft.FREE_TEXT_SYSTEM_PROMPT.strip())
+        body = system_body(record["text"])
+        self.assertTrue(body.startswith(sft.TEACHER_SYSTEM_PROMPT.strip()), body[:120])
+        self.assertTrue(body.endswith(sft.FREE_TEXT_CONTRACT), body[-160:])
+        self.assertEqual(body, sft.FREE_TEXT_SYSTEM_PROMPT.strip())
         self.assertNotIn("composed mode", record["text"])
 
     def test_composed_target_keeps_the_action_object(self) -> None:
@@ -326,6 +332,13 @@ class ModePrompts(unittest.TestCase):
         self.assertEqual(prompts["composed"]["sha256"], hashlib.sha256(sft.COMPOSED_SYSTEM_PROMPT.encode()).hexdigest())
         self.assertNotEqual(prompts["free_text"]["sha256"], prompts["composed"]["sha256"])
         self.assertIn("teacher.SYSTEM_PROMPT", prompts["free_text"]["source"])
+        superseded = prompts["free_text"]["superseded"]
+        self.assertEqual(len(superseded), 1)
+        self.assertEqual(
+            superseded[0]["sha256"], hashlib.sha256(sft.TEACHER_SYSTEM_PROMPT.encode()).hexdigest()
+        )
+        self.assertIn("no output shape", superseded[0]["reason"])
+        self.assertNotEqual(superseded[0]["sha256"], prompts["free_text"]["sha256"])
 
     def test_record_over_max_seq_len_is_refused(self) -> None:
         filler = json.dumps({"args": {"order_id": "ORD-1001"}, "result": {"data": {"blob": "stack " * 3000}}})

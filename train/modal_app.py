@@ -71,7 +71,7 @@ TORCH_VERSION = "2.14.1"
 
 DATASET_LOCAL = REPO_ROOT / "data" / "sft" / "sft.jsonl"
 DATASET_REMOTE = "/root/sft.jsonl"
-DATASET_SHA256 = "bfe5bb3e61676dd4079cf2f81285ed82b9219b2659913924a6a20f7c2bd0e9cc"
+DATASET_SHA256 = "da6ef8853cb8a8e34a83d992cc71b4d09a71cc91094339ef072c96ac30c7518f"
 
 VOLUME_NAME = "eval-gated-lora-agent"
 VOLUME_MOUNT = "/vol"
@@ -79,7 +79,7 @@ RUNS_DIR = f"{VOLUME_MOUNT}/runs"
 HF_HOME = f"{VOLUME_MOUNT}/hf"
 
 # Shape of the run.
-MAX_SEQ_LEN = 2560  # longest record is 2540 tokens; nothing is truncated
+MAX_SEQ_LEN = 2816  # longest free-text record is 2757 tokens with the contract; nothing is truncated
 BATCH_SIZE = 1
 GRAD_ACCUM = 4  # 245 train rows / 1 / 4 = 62 optimizer steps per epoch, 186 over 3 epochs
 EPOCHS = 3
@@ -102,13 +102,13 @@ CPU_CORES = 4.0
 MEMORY_MIB = 32 * 1024
 
 # Load-and-shape check: one trained run, two frozen cases, no training.
-CHECK_RUN_ID = "full-20261113T205627Z"
+CHECK_RUN_ID = "full-20261114T201900Z"
 CHECK_ADAPTER_REMOTE = f"{RUNS_DIR}/{CHECK_RUN_ID}/adapter"
 CHECK_CASE_COMPOSED = "N-105"  # refund ORD-1059 for 2100 cents; train split; no holdout row names it
 CHECK_CASE_FREE_TEXT = "N-31"  # "What is the status of ORD-1013?"; train split; no holdout row names it
 CHECK_MAX_NEW_TOKENS = 256
 CHECK_TIMEOUT_SECONDS = 1200
-CHECK_TRAINABLE_PARAMS = 116_727_808  # the count full-20261113T205627Z's run.json records
+CHECK_TRAINABLE_PARAMS = 116_727_808  # the count full-20261114T201900Z's run.json records
 CHECK_BANNER = (
     "load-and-shape check, not a quality claim: 13 of the 14 composed cases were in the training "
     "split and N-104 is the validation row, so agreement proves the weights and the prompt format "
@@ -713,15 +713,17 @@ def train(smoke: bool = False) -> dict:
     return result
 
 
-def check_prompt(text: str, case_id: str, tokenizer, input_ids: list[int]) -> str:
-    """The exact prompt training saw before the case's last assistant content.
+def check_prompt(text: str, case_id: str, tokenizer, input_ids: list[int], first: bool = False) -> str:
+    """The exact prompt training saw before a case's assistant content.
 
     The SFT record keeps the rendered chat, so this is a byte slice of it, not a
     re-render that a template change could move. The slice must tokenize to the
-    record's own id prefix, or it is not the training prompt.
+    record's own id prefix, or it is not the training prompt. `first` takes the
+    opening assistant turn — where the free-text plan belongs — instead of the
+    last one, which is the reply.
     """
     marker = ASSISTANT_TURN + "\n"
-    start = text.rindex(marker)
+    start = text.index(marker) if first else text.rindex(marker)
     empty_think = THINK_CLOSE + "\n\n"
     stop = text.find(empty_think, start)
     if stop < 0:
@@ -928,9 +930,15 @@ def check_adapter(cases: dict) -> dict:
     results = {}
     table = []
     for case_id, meta in cases.items():
-        prompt = check_prompt(by_case[case_id]["text"], case_id, tokenizer, by_case[case_id]["input_ids"])
+        prompt = check_prompt(
+            by_case[case_id]["text"],
+            case_id,
+            tokenizer,
+            by_case[case_id]["input_ids"],
+            first=meta["kind"] == "free_text",
+        )
         if meta["kind"] == "free_text":
-            print(f"\n==== {case_id} {meta['kind']} prompt, {len(prompt)} chars ====", flush=True)
+            print(f"\n==== {case_id} {meta['kind']} prompt, first turn, {len(prompt)} chars ====", flush=True)
             print(prompt, flush=True)
             print(f"==== end {case_id} prompt ====", flush=True)
         raw = generate(model, tokenizer, prompt, im_end_id)

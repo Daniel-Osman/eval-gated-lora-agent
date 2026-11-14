@@ -1,7 +1,8 @@
 # Gate specification
 
-Status: Phase A Ready. Phase B Draft (interface, contract and validator only;
-no judge model is wired).
+Status: Phase A Ready. Phase B Ready and **off by default**: the DeepSeek judge
+is wired, and the measure slice turns it on. Phase B widens prose coverage; it
+does not make a guarantee (see "Known limits").
 
 The gate decides whether a customer reply may leave the building. It is not a
 second opinion from a model. It is a check of the database against the reply.
@@ -14,12 +15,15 @@ ticket -> agent (model) -> tool calls -> SQLite
                                      v
                             snapshot before/after
                                      |
-              +----------------------+----------------------+
-              |                                             |
-        Phase A: deterministic                        Phase B: model judge
-        claim -> state binding                        strict JSON contract
-              |                                             |
-              +----------------------+----------------------+
+                            Phase A: deterministic
+                            claim -> state binding
+                                      |
+                        any code?  ---+--- no code
+                            |                 |
+                    verdict as coded    Phase B: model judge
+                    (no judge call)     strict JSON contract
+                            |                 |
+                            +--------+--------+
                                      |
                  APPROVED  -> gate writes reply -> customer
                  REJECTED  -> feed reason back, retry (max 3)
@@ -46,13 +50,14 @@ evaluate(
     ticket_id: str,
     reply: str,
     baseline: dict,              # referee.snapshot() taken before the run
-    phase_b: str | None = None,  # None/"off" or "stub"
-    judge: Callable | None = None,
-    calls: list[dict] | None = None,
+    phase_b: str | None = None,  # None/"off", or "judge" to run Phase B
+    judge: Callable | None = None,   # judge.JudgeClient(**{case_id, calls, reply, state})
+    calls: list[dict] | None = None, # execution log: tool, args, full result
     ticket_text: str = "",
     commit: bool = False,
 ) -> Decision                     # verdict: APPROVED | REJECTED | ESCALATED,
-                                  # codes, reasons, phase
+                                  # codes, reasons, phase,
+                                  # provenance (one record per judge call)
 
 run_gated(conn, *, ticket_id, propose, phase_b=None, judge=None, record=True)
     -> GatedResult                # status: APPROVED | ESCALATED, attempts, reply
@@ -103,8 +108,9 @@ claim. This table is the complete set the code can emit.
 | `STATE_INVARIANT_VIOLATION` | REJECTED | refund total exceeds order total, or a succeeded refund sits on an unpaid order | `orders`, `refunds` |
 | `UNVERIFIED_CLAIM` | ESCALATED | reply asserts a recognised completed action that cannot be bound to state | state diff, claim fields |
 | `CLAIM_ENTITY_UNBOUND` | ESCALATED | the claim names no order, or several addresses changed, so state cannot be read | `orders`, `addresses` |
-| `JUDGE_INVALID` | ESCALATED | judge output is off contract, including a typed verdict other than `APPROVED` or `REJECTED` | none (fail closed) |
-| `JUDGE_UNAVAILABLE` | REJECTED | Phase B enabled, judge missing or raised | none (fail closed) |
+| `JUDGE_INVALID` | ESCALATED | judge output is off contract: prose, a fence, an extra key, a missing/blank/over-long reason, or a verdict outside the three-value enum | none (fail closed) |
+| `JUDGE_UNAVAILABLE` | ESCALATED | Phase B enabled and the judge is missing, could not be reached after its transport retries, or refused the call | none (fail closed) |
+| `JUDGE_ESCALATED` | ESCALATED | judge returned `ESCALATED`: the log and the draft do not settle it | judge reason |
 | `JUDGE_REJECTED` | REJECTED | judge returned `REJECTED` | judge reason |
 
 ### Claim detection and binding
@@ -199,48 +205,76 @@ mismatch. That is what catches "I've refunded $80.00" when the state says
   neither reject nor escalate what it does not parse.
 - Verify facts not in the reply's claim set (delivery dates, item names).
 
-Those are Phase B, and Phase B is a stub.
+Those are Phase B. It widens prose coverage. It does not make a guarantee.
 
 ## Phase B contract
 
-The judge receives the ticket, the tool calls, the state diff and the reply. It
-must answer with exactly:
+Phase B runs **after Phase A approves**, and only then: it is skipped when Phase
+A has any code at all, so an unverifiable claim still escalates immediately and a
+judge answer can never turn a Phase A rejection into a retry.
+
+The judge receives the execution log (every tool call with its full result
+envelope, plus the referee's state-after diff) and the draft reply. It does not
+receive the ticket, and nothing that hints at the expected verdict: no gate code,
+no phrase list, no required-fact list, no case metadata. It must answer with
+exactly:
 
 ```json
-{"verdict": "APPROVED" | "REJECTED", "reason": "..."}
+{"verdict": "APPROVED" | "REJECTED" | "ESCALATED", "reason": "..."}
 ```
 
-`shopagent/judge.py::parse_judge_output` accepts a bare object or a fenced JSON
-block, and requires exactly two keys, a valid verdict, and a non-empty string
-reason. The verdict is a strict enum: only `APPROVED` and `REJECTED` are
-decisions. Any other value — `MAYBE`, `""`, a different case, an extra key — is
-off contract. A returned `JudgeVerdict` is checked the same way, so a typed
-`MAYBE` cannot slip past the parser.
+`shopagent/judge.py::parse_judge_output` is strict: `json.loads` on the stripped
+text and nothing else. No prose, no fence, no prefix. It requires exactly two
+keys, a verdict inside the three-value enum, and a non-empty string reason of at
+most 300 characters. A typed `JudgeVerdict` goes through the same
+`check_verdict`, so a typed `MAYBE`, a blank reason or an over-long reason cannot
+slip past the parser.
 
-The three judge outcomes fail closed in different directions:
+The four judge outcomes:
 
-- `JUDGE_INVALID`, including a typed but off-enum verdict: `ESCALATED`. Phase A
-  found nothing wrong; only the judge's output is unusable, so a human decides.
-  It is never an approval.
-- `JUDGE_UNAVAILABLE`: `REJECTED`. No second opinion exists, so the draft does
-  not ship.
+- `JUDGE_INVALID`, including a typed or off-enum verdict and any off-contract
+  text: `ESCALATED`. Phase A found nothing wrong; only the judge's answer is
+  unusable, so a human decides. It is never an approval.
+- `JUDGE_UNAVAILABLE`, including a transport failure after the client's own
+  retries: `ESCALATED`. No second opinion exists; retrying with a reason the
+  model cannot act on helps nobody.
+- `JUDGE_ESCALATED`: `ESCALATED`. The judge read the log and the draft and does
+  not consider them settled.
 - `JUDGE_REJECTED`: `REJECTED`, feeding the judge's reason back for a retry.
 
-`SYSTEM_PROMPT` and `build_judge_prompt()` in `judge.py` define the judge
-interface. The locked Phase B judge is `opencode-go/deepseek-v4.1-flash` over
-the OpenCode Go subscription API (`SPEC.md`). The stub still names a local
-llama.cpp endpoint and makes no network call; stage 4 re-points it to the locked
-judge.
+`SYSTEM_PROMPT` and `build_judge_prompt()` in `judge.py` define the interface.
+The locked judge is `opencode-go/deepseek-v4.1-flash` over the OpenCode Go
+subscription API (`SPEC.md` §2). `JudgeClient` composes `teacher.TeacherClient`,
+so the gateway (`https://opencode.ai/zen/go/v1`), the `OPENCODE_API_KEY` rule
+(`OPENCODE_GO_API_KEY` is an alias), the `x-opencode-session` header, the
+429/5xx backoff and the single 4xx retry are one implementation, not two. The key
+is held in memory only: it appears in no file, no log line and no error string.
+
+Provenance is recorded per judge call through the client's `record` sink and on
+`Decision.provenance`: `model`, `gateway`, `case_id`, `checked_at`, `verdict`,
+`reason`. A failed call records one too, with verdict `ESCALATED` and a
+`JUDGE_INVALID:` or `JUDGE_UNAVAILABLE:` reason, so a failure can never be
+recorded as an approval.
+
+### The switch
+
+`phase_b` is the switch: `None`/`"off"` is off, `"judge"` is on with the client
+injected through `judge=`. Off is the default, which keeps the test suite, the
+benchmark, `demo` and `trace` network-free. The cost is one branch in `evaluate`
+and one injected callable; the alternative makes every bench path need a fake
+judge and the benchmark need a live call. It stays.
 
 ## Retry and escalation
 
-`run_gated` owns the loop:
+`run_gated` owns the loop. The judge client does not retry the model: its own
+retries are network retries inside one call.
 
-1. Take a fresh state snapshot.
+1. Take a fresh state snapshot, and note the audit-log seq.
 2. Call `propose(feedback)`. `feedback` is `None` on attempt 1, then the joined
    gate reasons (for example `REFUND_CLAIM_UNSUPPORTED: ...`).
-3. Evaluate. Record the attempt in `gate_runs` (ticket, attempt, phase, verdict,
-   codes, reason, reply).
+3. Read the attempt's tool calls from the audit log (`tool`, `args`, full
+   `result`) and evaluate. Record the attempt in `gate_runs` (ticket, attempt,
+   phase, verdict, codes, reason, reply).
 4. `APPROVED` -> the gate writes the reply to `replies` and returns.
 5. `REJECTED` -> feed the reason back and retry. After 3 rejections, insert one
    row into `human_queue` with the draft and return `ESCALATED`. Never loop
@@ -266,8 +300,15 @@ human_queue(ticket_id, attempts, last_reason, status, ts)
 
 - `tests/test_gate.py` — every rule above, the three verdicts, the gate-owned
   commit, the audit-log-is-not-evidence case, negation scope, the token guard,
-  the Phase B contract and strict enum, retry and the three-rejection
-  escalation boundary.
+  the Phase B call site (skipped after a Phase A code, fail-closed codes, the
+  three-value mapping, typed-reason rules), the real execution log reaching the
+  judge, retry and the three-rejection escalation boundary.
+- `tests/test_judge.py` — the judge client with a fake transport and no network:
+  request shape and key rules, valid `APPROVED`/`REJECTED`/`ESCALATED`, prose, a
+  fence, a wrong enum, a missing/blank/non-string/over-long reason, an extra
+  key, transport error after retries, 429 and 5xx then success, one 403 retry, a
+  4xx not retried, the key absent from every `repr`, error and record, and one
+  provenance record per call including a failed call.
 - `tests/test_bench.py` - the original 40 cases plus the paraphrase suite: oracle
   consistency, scripted 40/40, and the 32-case holdout caught with 30 exact
   verdicts.
@@ -290,7 +331,8 @@ human_queue(ticket_id, attempts, last_reason, status, ts)
   on an unseen 32-reply set free-text Phase A caught 12/32 and approved 20 false
   replies. Phase A is a detector over a finite category rule, not a fail-closed
   guarantee. Composed mode (`shopagent/compose.py`) is the mode with the
-  no-false-claim property; Phase B is where free-text coverage must come from.
+  no-false-claim property; Phase B is where free-text coverage must come from,
+  and Phase B widens coverage without making a guarantee of its own.
 - Composed mode renders four actions — status, refund, reshipment and address —
   from ids and an amount only. For an address it can confirm a stored row or
   refuse a change on a shipped parcel, and it cannot originate a change:
@@ -306,8 +348,11 @@ human_queue(ticket_id, attempts, last_reason, status, ts)
   test.
 - The holdout is 32 reviewer-written replies against this same shop and gate.
   It is frozen and excluded from training, but it is not an open-ended sample.
-- Phase B is stubbed, so `ESCALATED` is the fallback for a recognised but
-  unverifiable claim, not a judge decision.
+- Phase B is measured on the frozen bench, not on the holdouts. It ran once per
+  Phase A approval over both stage-4 artifacts: 0 invalid and 0 unavailable
+  answers, and it moved the adapter's approvals 233 to 226 and base's 101 to 56.
+  The holdouts remain unjudged, and the false-approval figure comes from the
+  case-kind rule, not from a false-claim review.
 - Amount matching is dollar-only and English-only.
 - A succeeded refund with a wrong `reason` field is not a gate failure; the
   amount and status are what the customer was told.

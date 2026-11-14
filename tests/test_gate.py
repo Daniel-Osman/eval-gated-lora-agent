@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from shopagent.db import audit, connect as db_connect, insert, now_iso, rows, scalar
 from shopagent.gate import MAX_ATTEMPTS, evaluate, run_gated
-from shopagent.judge import JudgeUnavailable, JudgeVerdict, parse_judge_output, stub_judge
+from shopagent.judge import (
+    REASON_MAX_CHARS,
+    JudgeUnavailable,
+    JudgeVerdict,
+    parse_judge_output,
+)
 from shopagent.referee import snapshot
 from shopagent.seed import seed
 from shopagent.tools import ToolKit
@@ -748,65 +754,197 @@ class GatePhaseBTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.conn.close()
 
-    def test_stub_fails_closed(self) -> None:
+    def _evaluate(self, judge, **kwargs):
+        return evaluate(
+            self.conn,
+            ticket_id="G-2",
+            reply="I've refunded $24.00 for ORD-1001.",
+            baseline=self.baseline,
+            phase_b="judge",
+            judge=judge,
+            **kwargs,
+        )
+
+    def test_unavailable_judge_escalates(self) -> None:
+        def failing(**_):
+            raise JudgeUnavailable("the gateway is down")
+
+        decision = self._evaluate(failing)
+        self.assertIn("JUDGE_UNAVAILABLE", decision.codes)
+        self.assertEqual(decision.verdict, "ESCALATED")
+
+    def test_enabled_with_no_judge_escalates(self) -> None:
         decision = evaluate(
             self.conn,
             ticket_id="G-2",
             reply="I've refunded $24.00 for ORD-1001.",
             baseline=self.baseline,
-            phase_b="stub",
-            judge=stub_judge,
+            phase_b="judge",
         )
-        self.assertEqual(decision.verdict, "REJECTED")
         self.assertIn("JUDGE_UNAVAILABLE", decision.codes)
+        self.assertEqual(decision.verdict, "ESCALATED")
 
     def test_judge_approval(self) -> None:
-        decision = evaluate(
-            self.conn,
-            ticket_id="G-2",
-            reply="I've refunded $24.00 for ORD-1001.",
-            baseline=self.baseline,
-            phase_b="stub",
-            judge=lambda **_: JudgeVerdict("APPROVED", "supported"),
+        decision = self._evaluate(
+            lambda **_: JudgeVerdict("APPROVED", "supported"),
         )
         self.assertEqual(decision.verdict, "APPROVED")
         self.assertEqual(decision.phase, "A+B")
+        self.assertEqual(len(decision.provenance), 1)
+        self.assertEqual(decision.provenance[0]["case_id"], "G-2")
 
     def test_judge_rejection(self) -> None:
-        decision = evaluate(
-            self.conn,
-            ticket_id="G-2",
-            reply="I've refunded $24.00 for ORD-1001.",
-            baseline=self.baseline,
-            phase_b="stub",
-            judge=lambda **_: JudgeVerdict("REJECTED", "tone is wrong"),
+        decision = self._evaluate(
+            lambda **_: JudgeVerdict("REJECTED", "tone is wrong"),
         )
         self.assertIn("JUDGE_REJECTED", decision.codes)
+        self.assertEqual(decision.verdict, "REJECTED")
+
+    def test_judge_escalation(self) -> None:
+        decision = self._evaluate(
+            lambda **_: JudgeVerdict("ESCALATED", "cannot tell from the log"),
+        )
+        self.assertIn("JUDGE_ESCALATED", decision.codes)
+        self.assertEqual(decision.verdict, "ESCALATED")
 
     def test_invalid_judge_output_fails_closed(self) -> None:
-        decision = evaluate(
-            self.conn,
-            ticket_id="G-2",
-            reply="I've refunded $24.00 for ORD-1001.",
-            baseline=self.baseline,
-            phase_b="stub",
-            judge=lambda **_: "not json at all",
-        )
+        decision = self._evaluate(lambda **_: "not json at all")
         self.assertIn("JUDGE_INVALID", decision.codes)
+        self.assertEqual(decision.verdict, "ESCALATED")
+
+    def test_malformed_answer_never_commits(self) -> None:
+        decision = self._evaluate(lambda **_: "looks fine", commit=True)
+        self.assertEqual(decision.verdict, "ESCALATED")
+        self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM replies"), 0)
 
     def test_typed_invalid_verdict_escalates(self) -> None:
         # A typed but off-contract verdict is not a rejection: Phase A approved
         # the claim, and only the judge's output is unusable. A human decides.
-        decision = evaluate(
-            self.conn,
-            ticket_id="G-2",
-            reply="I've refunded $24.00 for ORD-1001.",
-            baseline=self.baseline,
-            phase_b="stub",
-            judge=lambda **_: JudgeVerdict("MAYBE", ""),
+        decision = self._evaluate(lambda **_: JudgeVerdict("MAYBE", ""))
+        self.assertIn("JUDGE_INVALID", decision.codes)
+        self.assertEqual(decision.verdict, "ESCALATED")
+
+    def test_duplicate_verdict_key_escalates(self) -> None:
+        # `json.loads` resolves this to APPROVED (last key wins). The gate must
+        # see an off-contract answer and send it to a human instead.
+        decision = self._evaluate(
+            lambda **_: '{"verdict":"REJECTED","verdict":"APPROVED","reason":"ok"}'
         )
         self.assertIn("JUDGE_INVALID", decision.codes)
         self.assertEqual(decision.verdict, "ESCALATED")
+
+    def test_duplicate_reason_key_escalates(self) -> None:
+        decision = self._evaluate(
+            lambda **_: (
+                '{"verdict":"APPROVED","reason":"ok","reason":"the log supports it"}'
+            )
+        )
+        self.assertIn("JUDGE_INVALID", decision.codes)
+        self.assertEqual(decision.verdict, "ESCALATED")
+
+    def test_typed_reasons_take_the_same_rules(self) -> None:
+        for bad in (" ", 7, "x" * (REASON_MAX_CHARS + 1)):
+            decision = self._evaluate(
+                lambda bad=bad, **_: JudgeVerdict("APPROVED", bad),
+                commit=True,
+            )
+            self.assertIn("JUDGE_INVALID", decision.codes)
+            self.assertEqual(decision.verdict, "ESCALATED")
+            self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM replies"), 0)
+
+    def test_phase_b_is_skipped_when_phase_a_rejects(self) -> None:
+        from shopagent.faults import inject
+
+        conn = fresh()
+        inject(conn, "refund", "ORD-1001", "card_declined", times=1)
+        tk = ToolKit(conn, ticket_id="G-3")
+        baseline = snapshot(conn)
+        tk.call("refund_order", order_id="ORD-1001", amount_cents=2400)
+        calls = {"n": 0}
+
+        def judge(**_):
+            calls["n"] += 1
+            return JudgeVerdict("APPROVED", "ok")
+
+        decision = evaluate(
+            conn,
+            ticket_id="G-3",
+            reply="I've refunded $24.00 for ORD-1001.",
+            baseline=baseline,
+            phase_b="judge",
+            judge=judge,
+        )
+        self.assertEqual(decision.verdict, "REJECTED")
+        self.assertEqual(decision.phase, "A")
+        self.assertEqual(calls["n"], 0)
+
+    def test_phase_b_is_skipped_when_phase_a_escalates(self) -> None:
+        calls = {"n": 0}
+
+        def judge(**_):
+            calls["n"] += 1
+            return JudgeVerdict("APPROVED", "ok")
+
+        conn = fresh()
+        baseline = snapshot(conn)
+        decision = evaluate(
+            conn,
+            ticket_id="G-4",
+            reply="I've refunded $24.00 for ORD-1001.",
+            baseline=baseline,
+            phase_b="judge",
+            judge=judge,
+        )
+        self.assertEqual(decision.verdict, "ESCALATED")
+        self.assertEqual(decision.phase, "A")
+        self.assertEqual(calls["n"], 0)
+
+
+class PhaseBLogTests(unittest.TestCase):
+    def test_run_gated_passes_the_real_tool_calls(self) -> None:
+        conn = fresh()
+        tk = ToolKit(conn, ticket_id="L-1")
+        captured: dict = {}
+
+        def judge(**prompt):
+            captured.update(prompt)
+            return JudgeVerdict("APPROVED", "supported")
+
+        def propose(feedback):
+            tk.call("refund_order", order_id="ORD-1001", amount_cents=2400)
+            return "I've refunded $24.00 for ORD-1001."
+
+        result = run_gated(
+            conn, ticket_id="L-1", propose=propose, phase_b="judge", judge=judge
+        )
+        self.assertEqual(result.status, "APPROVED")
+        self.assertEqual(set(captured), {"case_id", "calls", "reply", "state"})
+        refunds = [call for call in captured["calls"] if call["tool"] == "refund_order"]
+        self.assertEqual(len(refunds), 1)
+        self.assertEqual(refunds[0]["args"]["order_id"], "ORD-1001")
+        self.assertIn("succeeded", json.dumps(refunds[0]["result"]))
+
+    def test_a_read_only_result_envelope_reaches_the_judge(self) -> None:
+        conn = fresh()
+        tk = ToolKit(conn, ticket_id="L-2")
+        captured: dict = {}
+
+        def judge(**prompt):
+            captured.update(prompt)
+            return JudgeVerdict("APPROVED", "supported")
+
+        def propose(feedback):
+            tk.call("get_order", order_id="ORD-1001")
+            return "Thanks for your message."
+
+        result = run_gated(
+            conn, ticket_id="L-2", propose=propose, phase_b="judge", judge=judge
+        )
+        self.assertEqual(result.status, "APPROVED")
+        orders = [call for call in captured["calls"] if call["tool"] == "get_order"]
+        self.assertEqual(len(orders), 1)
+        self.assertIn("paid", json.dumps(orders[0]["result"]))
+        self.assertNotIn("ORD-1001", captured["reply"])
 
 
 class JudgeContractTests(unittest.TestCase):
@@ -814,9 +952,13 @@ class JudgeContractTests(unittest.TestCase):
         verdict = parse_judge_output('{"verdict": "APPROVED", "reason": "state matches"}')
         self.assertEqual(verdict.verdict, "APPROVED")
 
-    def test_fenced_json(self) -> None:
-        verdict = parse_judge_output('```json\n{"verdict": "REJECTED", "reason": "no"}\n```')
-        self.assertEqual(verdict.verdict, "REJECTED")
+    def test_escalate_is_valid(self) -> None:
+        verdict = parse_judge_output('{"verdict": "ESCALATED", "reason": "not settled"}')
+        self.assertEqual(verdict.verdict, "ESCALATED")
+
+    def test_fenced_json_is_invalid(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_judge_output('```json\n{"verdict": "REJECTED", "reason": "no"}\n```')
 
     def test_extra_key_is_invalid(self) -> None:
         with self.assertRaises(ValueError):
@@ -829,10 +971,6 @@ class JudgeContractTests(unittest.TestCase):
     def test_empty_reason_is_invalid(self) -> None:
         with self.assertRaises(ValueError):
             parse_judge_output('{"verdict": "APPROVED", "reason": " "}')
-
-    def test_stub_raises(self) -> None:
-        with self.assertRaises(JudgeUnavailable):
-            stub_judge()
 
 
 def _failed_refund(conn, ticket_id: str) -> ToolKit:
@@ -880,6 +1018,46 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(queue[0]["attempts"], MAX_ATTEMPTS)
         self.assertEqual(queue[0]["status"], "open")
         self.assertEqual(queue[0]["draft"], reply)
+
+    def test_judge_rejections_stop_at_three_and_queue_the_draft(self) -> None:
+        conn = fresh()
+        feedbacks: list[str | None] = []
+
+        def propose(feedback: str | None) -> str:
+            feedbacks.append(feedback)
+            return "Thanks for your message."
+
+        def judge(**_):
+            return JudgeVerdict("REJECTED", "the reply does not answer the ticket")
+
+        result = run_gated(
+            conn, ticket_id="R-5", propose=propose, phase_b="judge", judge=judge
+        )
+        self.assertEqual(result.status, "ESCALATED")
+        self.assertEqual(len(result.attempts), MAX_ATTEMPTS)
+        self.assertEqual(len(feedbacks), MAX_ATTEMPTS)
+        self.assertIsNone(feedbacks[0])
+        self.assertIn("JUDGE_REJECTED", feedbacks[1])
+        self.assertEqual(scalar(conn, "SELECT COUNT(*) FROM gate_runs"), MAX_ATTEMPTS)
+        self.assertEqual(scalar(conn, "SELECT COUNT(*) FROM replies"), 0)
+        queue = rows(conn, "SELECT * FROM human_queue")
+        self.assertEqual(len(queue), 1)
+        self.assertEqual(queue[0]["attempts"], MAX_ATTEMPTS)
+        self.assertEqual(queue[0]["draft"], "Thanks for your message.")
+
+    def test_judge_escalation_goes_straight_to_the_queue(self) -> None:
+        conn = fresh()
+        result = run_gated(
+            conn,
+            ticket_id="R-6",
+            propose=lambda feedback: "Thanks for your message.",
+            phase_b="judge",
+            judge=lambda **_: JudgeVerdict("ESCALATED", "cannot tell from the log"),
+        )
+        self.assertEqual(result.status, "ESCALATED")
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(scalar(conn, "SELECT COUNT(*) FROM replies"), 0)
+        self.assertEqual(scalar(conn, "SELECT COUNT(*) FROM human_queue"), 1)
 
     def test_unverifiable_claim_escalates_immediately_with_draft(self) -> None:
         conn = fresh()

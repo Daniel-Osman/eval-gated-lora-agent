@@ -453,6 +453,154 @@ def cmd_validate(_args) -> int:
     return 0 if not errors else 1
 
 
+def cmd_judge_bench(args) -> int:
+    """Phase B over stored Phase A artifacts: one judge call per eligible row."""
+    import os
+    import time
+    from datetime import datetime, timezone
+
+    from .freeze import read, verify
+    from .judge import JudgeClient, JudgeUnavailable
+    from .judgebench import default_student, load_rows, score, worst, write_outputs
+
+    rows_path = Path(args.rows)
+    if not rows_path.is_absolute():
+        rows_path = ROOT / rows_path
+    if not rows_path.exists():
+        print(f"no rows file: {rows_path}")
+        return 2
+    if read() is not None:
+        ok, problems = verify()
+        if not ok:
+            print("BENCHMARK FROZEN CHECK FAILED")
+            for problem in problems:
+                print(f"  - {problem}")
+            print("Refusing to score against a modified benchmark.")
+            return 2
+
+    key = os.environ.get("OPENCODE_API_KEY")
+    if not key:
+        print("no judge key: set OPENCODE_API_KEY. The key is never read from a file.")
+        return 2
+    student = args.student or default_student(rows_path)
+    session_id = args.session_id or (
+        f"judge-bench-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    )
+    try:
+        client = JudgeClient(session_id=session_id, api_key=key, timeout=args.timeout)
+    except JudgeUnavailable as exc:
+        print(f"judge is not configured: {exc}")
+        return 2
+
+    rows = load_rows(rows_path)
+    started = time.monotonic()
+    try:
+        result = score(rows, client, concurrency=args.concurrency)
+    except ValueError as exc:
+        print(f"cannot score: {exc}")
+        return 2
+    elapsed = time.monotonic() - started
+
+    summary = result["summary"]
+    reconciliation = summary["reconciliation"]
+    phase_a = summary["phase_a"]
+    phase_b = summary["phase_a_plus_b"]
+
+    print(f"student: {student}   rows: {rows_path}   {reconciliation['rows']} rows")
+    print("benchmark frozen: OK")
+    print(
+        f"reconciliation: {reconciliation['rows']} = {reconciliation['judged']} judged"
+        f" + {reconciliation['phase_a_refused']} refused after Phase A"
+        f" + {reconciliation['not_scored']} not scored"
+        f" + {reconciliation['no_draft']} no-draft"
+    )
+    if not reconciliation["balances"]:
+        print("  WARNING: the row partition does not balance")
+    print()
+    print("PHASE A ALONE")
+    print(
+        f"  approved {phase_a['APPROVED']}  rejected {phase_a['REJECTED']}"
+        f"  escalated {phase_a['ESCALATED']}  no-draft {phase_a['NO_DRAFT']}"
+    )
+    print(
+        f"  false approvals   {phase_a['false_approvals']}/{summary['adversarial_rows']}"
+        f" adversarial rows approved"
+    )
+    print(
+        f"  false rejections  {phase_a['false_rejections']}/{summary['normal_rows']}"
+        f" normal rows rejected"
+    )
+    print(
+        f"  false escalations {phase_a['false_escalations']}/{summary['normal_rows']}"
+        f" normal rows escalated"
+    )
+    print(
+        f"  caught            {phase_a['caught']}/{summary['adversarial_rows']}"
+        f" adversarial rows not approved"
+    )
+    print(
+        f"  {phase_a['marking_check_passing_approvals']} of those approvals pass the row's"
+        f" literal marking check (facts present, no forbidden phrase; not proof of truth)"
+    )
+    print()
+    print("PHASE A + PHASE B")
+    print(
+        f"  approved {phase_b['APPROVED']}  rejected {phase_b['REJECTED']}"
+        f"  escalated {phase_b['ESCALATED']}  (of {phase_b['claimed']} rows with a verdict)"
+    )
+    print(
+        f"  judge calls {phase_b['judged']}: agreed {phase_b['agreed']}"
+        f"  turned to REJECTED {phase_b['turned_rejected']}"
+        f"  turned to ESCALATED {phase_b['turned_escalated']}"
+    )
+    print(f"  invalid output {phase_b['invalid']}  unavailable {phase_b['unavailable']}")
+    print(
+        f"  false approvals   {phase_b['false_approvals']}/{summary['adversarial_rows']}"
+        f" adversarial rows; of {phase_b['phase_a_false_approvals']} Phase A false approvals:"
+        f" {phase_b['caught_by_judge']} caught, {phase_b['missed_by_judge']} missed"
+    )
+    print(
+        f"  false rejections  {phase_b['false_rejections']}/{summary['normal_rows']}"
+        f"  false escalations {phase_b['false_escalations']}/{summary['normal_rows']}"
+    )
+    print(
+        f"  agreement         {phase_b['agreed']}/{phase_b['judged']}"
+        f" where the judge was asked"
+    )
+    print()
+    print("WORST ROWS")
+    for row in worst(result["rows"]):
+        verdict = row["phase_a_plus_b"] or "NO VERDICT"
+        print(
+            f"  {row['id']} ({row['kind']}, expected {row['expected']}):"
+            f" A {row['phase_a']} -> A+B {verdict}  codes {row['codes']}"
+        )
+        if row["judge_reason"]:
+            print(f"    judge: {row['judge_reason']}")
+        print(f"    reply: {row['reply']!r}")
+        if row["note"]:
+            print(f"    note: {row['note']}")
+    print()
+
+    written = write_outputs(
+        ROOT / args.out_dir,
+        student,
+        rows_path,
+        result,
+        model=client.model,
+        gateway=client.base_url,
+        session_id=session_id,
+        concurrency=args.concurrency,
+        calls=client.requests,
+        wall_seconds=elapsed,
+    )
+    print(f"session: {session_id}  model: {client.model}  gateway: {client.base_url}")
+    print(f"http attempts: {client.requests}   wall: {elapsed:.1f}s   cost: time only")
+    print(f"rows: {written['rows']}")
+    print(f"manifest: {written['manifest']}")
+    return 0
+
+
 def cmd_tools(_args) -> int:
     from .tools import TOOL_SPECS
 
@@ -625,6 +773,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = sub.add_parser("validate", help="validate the benchmark case files")
     validate.set_defaults(func=cmd_validate)
+
+    judge_bench = sub.add_parser(
+        "judge-bench", help="score a stored bench artifact with Phase B, once per eligible row"
+    )
+    judge_bench.add_argument("--rows", required=True, help="a bench JSONL artifact, e.g. out/bench-base-284.jsonl")
+    judge_bench.add_argument("--student", default="", help="artifact name for the output files (default: from --rows)")
+    judge_bench.add_argument(
+        "--concurrency", type=int, default=8, help="parallel judge calls, at most 8"
+    )
+    judge_bench.add_argument("--timeout", type=float, default=60.0, help="per-request timeout in seconds")
+    judge_bench.add_argument("--session-id", default="", help="one stable x-opencode-session id")
+    judge_bench.add_argument("--out-dir", default="out", help="where judged-<student>.* is written")
+    judge_bench.set_defaults(func=cmd_judge_bench)
 
     tools = sub.add_parser("tools", help="print tool JSON schemas")
     tools.set_defaults(func=cmd_tools)

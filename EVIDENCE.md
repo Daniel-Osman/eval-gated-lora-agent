@@ -6,6 +6,162 @@
 with the limit stated in milestone 4b.** The fresh-context review is the one
 unmet item, and the author cannot run it.
 
+# Stage 4 — base 27B against 27B + adapter, Phase B measured (2026-11-14)
+
+Author's record, written before the fresh-context review. Stage 3 remains
+**gated, not accepted**; stage 4 is **measured, not accepted**. The verdict is
+outstanding and the author cannot run it.
+
+Both students answered all 284 frozen cases in one pass each: one attempt per
+case, greedy decoding, the same `bench` entrypoint, a fresh seeded database per
+case. The judge then scored every row Phase A approved. Artifacts:
+`out/bench-base-284.jsonl`, `out/bench-adapter-284.jsonl`, `out/judged-base.jsonl`,
+`out/judged-adapter.jsonl`; logs `out/modal-bench-base.log` and
+`out/modal-bench-adapter.log`.
+
+Headline, in the one form these numbers allow: **the adapter follows both
+output contracts where base 27B writes tool plans in the reply position.** Base
+put a tool-plan list where a customer reply belongs on 97 of its 284 rows; the
+adapter put none. Base approved 101 rows under Phase A, the adapter 233. The
+judge moved 45 base rows off approval and 7 adapter rows. None of this is an
+accuracy score, and every case is a scenario the corpus already saw.
+
+## What changed before the runs
+
+1. **The free-text contract now states the output shape.** The free-text system
+   prompt is `shopagent.sft.FREE_TEXT_SYSTEM_PROMPT`: the teacher prompt plus a
+   paragraph naming the reply contract. The teacher prompt itself is untouched —
+   both bench manifests record
+   `config.prompts.free_text.source = "shopagent.sft.FREE_TEXT_SYSTEM_PROMPT (teacher prompt + contract)"`
+   and `config.prompts.teacher_prompt_sha256 = b009947d…bfe3`, the same teacher
+   prompt digest the SFT manifest carries. Both prompts were sent byte for byte
+   as the training renders them; each manifest prints the render rule.
+2. **The bench window is 2816 tokens**, against a 2,757-token longest row, so no
+   case is cut. `model.max_seq_length` and `dataset.bench_max_seq_length` read
+   2816 in both manifests, and both logs print `bench window 2816`.
+
+## The two bench runs
+
+Entrypoint `bench` in `train/bench_app.py`; the invocation is not recoverable
+from either log (`Unverified:` below). Costs are estimates: GPU, CPU and memory
+for the wall time at list rates, excluding the Volume commit.
+
+| | base 27B | 27B + adapter |
+|---|---|---|
+| adapter | none (base weights) | `full-20261114T201900Z`, `run_status ok`, 186 steps |
+| rows | 284 | 284 |
+| wall / estimated cost | 1557 s / `$1.10` | 1805 s / `$1.28` |
+| Phase A approved | 101 | 233 |
+| Phase A rejected | 141 | 31 |
+| Phase A escalated | 39 | 18 |
+| no draft | 3 | 2 |
+| plan errors | 109 | 40 |
+| peak GPU memory | 20.8 GB | 20.8 GB |
+
+`plan_errors` counts rows whose executed plan did not match the case's
+`required_calls` (`train/bench_app.py:667`, summed at `:960`). It is a plan
+measure, not the reply contract. The reply contract is the 97-versus-none count
+in the headline: a list of tool calls in the reply position is not a customer
+reply, and base wrote one on 97 rows.
+
+The three and two no-draft rows are the composed cases whose plan the composer
+refused; they have no reply to gate and no judge to run.
+
+## Phase A, then Phase A + B
+
+```
+python -m shopagent.cli judge-bench --rows out/bench-base-284.jsonl --student base
+python -m shopagent.cli judge-bench --rows out/bench-adapter-284.jsonl --student adapter
+```
+
+One judgeship per Phase A-approved row, temperature 0, no re-ask, no retry.
+
+| | base 27B | 27B + adapter |
+|---|---|---|
+| approved | 56 | 226 |
+| rejected | 186 | 38 |
+| escalated | 39 | 18 |
+| judge calls | 101 | 233 |
+| invalid / unavailable | 0 / 0 | 0 / 0 |
+| wall | 61.4 s | 116.6 s |
+
+Base: 101 → 56, so 45 rows moved, all to `REJECTED` (19 adversarial, 26 normal).
+Adapter: 233 → 226, 7 rows moved, all to `REJECTED` (1 adversarial, 6 normal).
+Escalations do not move: the judge runs only after Phase A finds nothing, so the
+39 and 18 carried unchanged.
+
+## The caveat: a correct refusal counts as a false approval
+
+`judge-bench` keeps `bench.py`'s case-kind rule as its expectation. That rule
+marks every approved adversarial case as a false approval. Many adversarial
+tickets can be answered truthfully — a refusal or a correction is a true
+statement — and the bench sample contains such true statements. So the rule
+over-counts: its number counts approvals on trap tickets, not false claims, and
+it is not a false-claim measure. The same caveat is written into both judged
+manifests (`limits`).
+
+What the artifacts do support is narrower: the adapter answers in the contract
+both modes ask for, where base returns tool plans; and the judge moved 45 base
+rows off approval against 7 adapter rows. `SPEC.md` §7's **"zero false approvals
+on a held-out adversarial set" stays unmeasured**: neither holdout was touched,
+and every bench case is one the corpus already saw.
+
+## Spend
+
+| Run | Log | Estimated cost |
+|---|---|---|
+| smoke (`scope smoke`, 20 steps) | `out/modal-smoke4.log` | `$0.2284` |
+| training, first (`full-20261113T180308Z`) | `out/modal-train.log` | `$0.7388` |
+| load check (`full-20261113T180308Z`) | `out/modal-check.log` | `$0.0751` |
+| training, second (`full-20261113T205627Z`) | `out/modal-train2.log` | `$0.8299` |
+| single-case check (`full-20261113T205627Z`) | `out/modal-check2.log` | `$0.0695` |
+| composed suite check (`full-20261113T205627Z`) | `out/modal-check3.log` | `$0.0848` |
+| training, third (`full-20261114T201900Z`) | `out/modal-train4.log` | `$0.8592` |
+| its composed check (`full-20261114T201900Z`) | `out/modal-check5.log` | `$0.0842` |
+| bench, smoke (8 cases) | `out/modal-bench.log`, `out/bench-smoke-base.manifest.json` | `$0.0983` (139 s) |
+| bench, base | `out/modal-bench-base.log` | `$1.0997` (gpu `$0.9075`, cpu `$0.0816`, memory `$0.1106`; 1556.6 s) |
+| bench, adapter | `out/modal-bench-adapter.log` | `$1.2751` (1805.0 s) |
+| **all eleven Modal estimates** | | **`$5.4430`** |
+| judge, base and adapter | `out/judged-*.manifest.json` | `$0.00` metered; `kind: time_only`, the judge rides the OpenCode Go subscription |
+
+All eleven are estimates, not the bill: GPU, CPU and memory for the wall time at
+list rates, excluding adapter save and Volume commit. The metered figure this
+month is **`$11.10346860`**, billed **`$0.00`**: credits cover it. Read the
+metered figure from the Modal dashboard; this repo does not write it.
+
+## Not proven
+
+- **The false-approval metric is unsettled.** The case-kind rule scores a correct
+  refusal on an adversarial case as a false approval, so no false-approval rate
+  in this record or the READMEs is a false-claim rate. Until the metric is
+  settled, the judge's safety contribution is measured in rows moved, not in
+  claims caught.
+- **Neither holdout was touched.** No holdout row and no holdout case entered
+  either bench run or either judge run. `SPEC.md` §7's held-out zero-false-approval
+  criterion is unmeasured, not met and not failed.
+- **The composed no-false-claim property is still the gate's and renderer's.**
+  The adapter emitted a plan for the composed cases it answered, which tests the
+  schema; nothing here shows it chooses the right action, and the sentence still
+  comes from the row the action wrote.
+- **Every bench case is seen.** The teacher was briefed on all 284 scenarios and
+  the student trained on the corpus. A score against these cases is recall of
+  seen scenarios; the two holdouts are the outside check, and neither was run.
+- **The judge is the teacher's model.** Teacher and judge are both
+  `deepseek-v4.1-flash` over one gateway, so judge agreement with the corpus is
+  partly self-confirming.
+- **The judge's own errors are not measured separately.** Its 45 and 7 moved
+  rows are reported as moves. Whether each move was right needs a hand read that
+  this record does not contain.
+- `Unverified:` the exact `modal run …` line for both bench runs. Each log begins
+  after submission; the adapter run id and status come from the manifest's
+  `dataset` block and the log's dataset pin.
+- **`train/bench_app.py`'s docstring still names the old adapter run.** Its
+  adapter example passes `--run-id full-20261113T205627Z`; the run these
+  artifacts used is `full-20261114T201900Z`.
+- **Not accepted.** The fresh-context verdict is outstanding; Helm spawns
+  `helm/shipwright-reviewer` for the PASS that counts.
+- Nothing committed.
+
 # Milestone 4 — SFT data, one adapter, the load-and-shape check (2026-11-13)
 
 Author's record. This milestone is **complete and gated, not accepted**: the

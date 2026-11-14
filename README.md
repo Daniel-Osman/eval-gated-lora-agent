@@ -5,7 +5,9 @@ the agent's own log. Its free-text mode is a detector, and detection does not
 generalise: on an unseen, freshly written set it caught 12 of 32 false replies
 and approved 20. The structural answer is composed mode, where code renders the
 sentence from the state the action actually wrote; there, a failed action cannot
-produce a success sentence. Phase B, the model judge, is stubbed.
+produce a success sentence. Phase B, the model judge, is wired and off by
+default; it has now scored the frozen bench once per student, and it widens
+prose coverage without making a guarantee.
 
 A store support agent for a small shop. It may call six tools that write real
 SQLite state and an append-only audit row. Before any reply reaches a customer,
@@ -13,10 +15,11 @@ a gate checks the database, not the agent's own log: if the refund failed, a
 reply that says "I've refunded your order" is rejected.
 
 **Stage: incubator, harness plus one adapter.** `SPEC.md` holds the locked plan:
-27B student, Modal compute, DeepSeek teacher and judge. A QLoRA adapter now
-exists on the Modal Volume (`full-20261113T205627Z`), not in this repo; it was
-loaded back and driven on 14 composed cases and one free-text case, and it is
-scored on none of them. A teacher
+27B student, Modal compute, DeepSeek teacher and judge. A QLoRA adapter exists on
+the Modal Volume (`full-20261114T201900Z`), not in this repo. It answered all 284
+frozen cases, and base 27B answered the same 284, so the stage-4 comparison
+exists; it is a **seen-scenario** comparison, the adapter approved 233 rows under
+Phase A against base's 101, and neither holdout was run. A teacher
 corpus exists: 178 admitted traces of 284 frozen cases, from a full pass plus a
 resumed pass after a brief change, gated, manifested and leak-checked (see
 below). Everything else measures the harness against a scripted fake agent,
@@ -79,7 +82,7 @@ shopagent/
   tools.py       six tools, policy enforced in code, every call audited
   referee.py     state snapshot, diff, declarative state expectations
   gate.py        Phase A on state evidence, retry loop, escalation
-  judge.py       Phase B contract, validator, stub
+  judge.py       Phase B: DeepSeek judge client, strict contract, provenance
   policies.py    deterministic honest fake agent (a fixture, not a model)
   compose.py     composed replies: sentence rendered from the row the action wrote
   teacher.py     OpenCode Go client, prompts, briefs, parsers, status-id source
@@ -273,10 +276,15 @@ Phase A is deterministic pattern-and-state binding. Phase B is a model judge —
 this exact contract, parsed as JSON and validated:
 
 ```json
-{"verdict": "APPROVED" | "REJECTED", "reason": "..."}
+{"verdict": "APPROVED" | "REJECTED" | "ESCALATED", "reason": "..."}
 ```
 
-Phase B is stubbed today and fails closed when unavailable. See `docs/GATE.md`.
+The parse is strict: one object, the three-value enum, a short reason, no prose,
+no fence, no extra key. Phase B runs only after Phase A finds nothing, and every
+off-contract answer or transport failure escalates. It is wired and **off by
+default**; the stage-4 measure slice ran it over the stored bench artifacts
+through `judge-bench`, one judgeship per Phase A-approved row. It widens prose
+coverage; it makes no guarantee. See `docs/GATE.md`.
 
 ## Composed mode
 
@@ -334,7 +342,7 @@ generalisation. The no-false-claim property is still the renderer's. See
 ## Numbers, with the command that produced each
 
 Run 2026-11-11 on this machine (Windows, Python 3.13.14), with the teacher rows
-added 2026-11-13.
+added 2026-11-13 and the stage-4 bench rows 2026-11-14.
 
 | Claim | Command | Result |
 |---|---|---|
@@ -363,9 +371,22 @@ added 2026-11-13.
 | Adapter loads as trained (first) | entrypoint `check_adapter` → `out/modal-check.log` | `['default']` active; 116,727,808 trainable = trained count; one `lora_B` tensor `torch.equal` to the file; free-text N-31 plausible; composed N-105 **refused** `unknown action None`; `$0.0751` |
 | Composed plan, one case | same entrypoint → `out/modal-check2.log` | `full-20261113T205627Z` adapter; N-105 raw `{"action": "refund", "amount_cents": 2100, "order_id": "ORD-1059"}`; parse ok, three fields match `required_calls`; `lora_B` `torch.equal`; `$0.0695` |
 | Composed plan, every composed case | same entrypoint → `out/modal-check3.log` | **14/14 parse, 14/14 match**; 13 cases in the training split, N-104 the val row; seen-case schema check only; `$0.0848` |
-| Test suite | `python -m unittest discover -s tests -q` | `Ran 275 tests` · `OK`, exit 0 |
+| Bench, base 27B (stage 4) | entrypoint `bench` in `train/bench_app.py` → `out/modal-bench-base.log` | 284 cases, one attempt each, 1557 s, est. `$1.10`; Phase A **101 approved / 141 rejected / 39 escalated / 3 no draft**; 109 plan errors; `out/bench-base-284.jsonl` |
+| Bench, 27B + adapter (stage 4) | same entrypoint → `out/modal-bench-adapter.log` | adapter `full-20261114T201900Z` (186 steps, `ok`), bench window 2816; 284 cases, 1805 s, est. `$1.28`; Phase A **233 / 31 / 18 / 2**; 40 plan errors; `out/bench-adapter-284.jsonl` |
+| Phase B over the base artifact (stage 4) | `python -m shopagent.cli judge-bench --rows out/bench-base-284.jsonl --student base` | 101 judge calls, 0 invalid, 0 unavailable, 0 not scored; A+B **56 approved / 186 rejected / 39 escalated**; 61.4 s; `out/judged-base.jsonl` + manifest |
+| Phase B over the adapter artifact (stage 4) | `python -m shopagent.cli judge-bench --rows out/bench-adapter-284.jsonl --student adapter` | 233 judge calls, 0 invalid, 0 unavailable, 0 not scored; A+B **226 / 38 / 18**; 116.6 s; `out/judged-adapter.jsonl` + manifest |
+| Test suite | `python -m unittest discover -s tests -q` | `Ran 332 tests` · `OK`, exit 0 |
 | Benchmark frozen | `python -m shopagent.cli verify-frozen` | `benchmark frozen: OK`, exit 0 |
 | Leak check over the corpus | `python -m shopagent.cli leakcheck --corpus data/train` | `178 sessions`, 284 cases, 92 holdout replies, four match lists empty, closest pair 0.75, `leak check: CLEAN`, exit 0 |
+
+**The case-kind rule counts a correct refusal as a false approval.** It marks
+every approved adversarial case as a false approval, but many adversarial tickets
+can be answered truthfully — the bench holds true statements, not only false
+claims — so that count is not a false-claim measure. What the stage-4 rows do
+support: the adapter follows both output contracts where base 27B writes tool
+plans as replies, and the judge moved 45 base rows off approval against 7 adapter
+rows. `SPEC.md` §7's "zero false approvals on a held-out adversarial set" stays
+**unmeasured**: neither holdout was touched, and every bench case is seen.
 
 Two holdout rows are caught but not exact: HR-21 and HR-22 are `REJECTED` where
 the reviewer wrote `ESCALATED`. Both name an address that contradicts state, and
@@ -410,8 +431,10 @@ Proven by commands in this repo:
   a nested field, a split token list or a JSONL array line
   (`tests/test_leakcheck.py`).
 - The composed fix moved composed rows only: the 164 free-text records, in source
-  order, hash to `9519a868…87479`, the pre-fix value
+  order, hash to `0bb6d133…77d85b`, the pinned value
   (`tests/test_sft.py::RealCorpus::test_free_text_records_hash_to_the_pre_fix_digest`).
+  The earlier digest `9519a868…87479` is recorded as superseded: it was taken
+  before the free-text prompt named its output shape.
 - The teacher corpus is gated before it is stored: a trace reaches a shard only
   after the gate returns `APPROVED`; a reject keeps its reason code and both raw
   responses; a bench-ticket or holdout collision is dropped and counted; a
@@ -442,9 +465,11 @@ Not proven yet:
   It is a detector over a finite category rule, not a fail-closed guarantee
   against unseen wording. The fixed suites and the remediation-targeted holdout
   do not change that.
-- Any model's behaviour. One adapter exists on the Modal Volume; it loads back
-  as trained and returns a matching composed plan on 14 seen cases. It is scored
-  on none of them: no benchmark number, no base-model comparison.
+- Any model's behaviour beyond the seen bench. One adapter exists on the Modal
+  Volume; it answered all 284 frozen cases in stage 4 and approved 233 under
+  Phase A against base 27B's 101, and it returns the contract both modes ask
+  for. That is a seen-scenario comparison: no holdout ran, and action, final-state
+  and reply-fact accuracy are not computed, so it is not an accuracy score.
 - **The loss is measured on 18,260 supervised tokens** in the retrain, the train
   split after the in-memory EOS extension, 5.9 % of 310,100. The file's masks
   hold 19,693 across both splits; the Volume record holds 20,120 with EOS. It
@@ -461,10 +486,14 @@ Not proven yet:
   the val row, so the set is 14 seen scenarios and one of them never trained.
   Nothing here shows a plan for a case the corpus never held, and the
   no-false-claim property remains the renderer's.
-- Phase B. The contract, parser and fail-closed path exist; no judge model is
-  wired. Free-text coverage beyond the tested phrasings must come from Phase B,
-  and it does not exist yet. Free-text coverage is unsolved, not merely
-  unmeasured.
+- Phase B. The judge is wired, off by default, and now **measured on the bench**:
+  it scored every Phase A-approved row of both stage-4 artifacts, with 0 invalid
+  and 0 unavailable answers. It has not judged either holdout, and its agreement
+  on this corpus is partly self-confirming because teacher and judge share one
+  model. Its false-approval count comes from the case-kind rule, which scores a
+  correct refusal as a false approval, so that figure is not a false-claim rate.
+  Phase B widens prose coverage; it makes no guarantee, and free-text coverage on
+  unseen wording stays unsolved.
 - **The teacher corpus is 178 traces, not 1,000+.** It comes from the frozen 284
   cases; hand-written seeds and schema-driven expansion (§3 of `SPEC.md`) are
   still Open. The two passes admitted 63% of cases; the rest are recorded
@@ -504,13 +533,18 @@ Next, in order:
    composed fix: 186 steps, 1174.7 s, 21.22 GB peak, $0.8299, adapter
    `full-20261113T205627Z`; the composed plan now parses and matches on 14 seen
    cases. The composed shape is learned; its choice of action is not tested.
-4. Wire Phase B: the judge is where free-text coverage beyond the tested
-   phrasings must come from. Until it is real, free-text mode stays at the
-   measured 12/32.
+4. Wire Phase B: **done, off by default** — the DeepSeek judge is behind the
+   `phase_b="judge"` switch, with the strict contract, fail-closed direction and
+   per-call provenance, and 41 fake-transport tests. It has since scored the bench
+   once per student: 101 base rows and 233 adapter rows, 0 invalid, 0 unavailable.
+   Free-text mode still measures 12/32 on unseen wording, and neither holdout has
+   been judged.
 5. Evaluate 27B base and 27B + adapter against the frozen benchmark and the
    holdout: action accuracy, final-state accuracy, reply-fact accuracy, gate
    catch rate, false-escalation rate, composed-mode false claim rate. Report
-   the truth next to the number, including a loss.
+   the truth next to the number, including a loss. **Partly done:** the frozen
+   bench is scored for both students (stage 4), the accuracy columns are not
+   computed, and the holdouts are untouched.
 
 Keys, when they exist, come from the environment and never enter the repo or a
 notebook.
