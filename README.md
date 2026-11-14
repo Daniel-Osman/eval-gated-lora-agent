@@ -86,11 +86,12 @@ shopagent/
   policies.py    deterministic honest fake agent (a fixture, not a model)
   compose.py     composed replies: sentence rendered from the row the action wrote
   teacher.py     OpenCode Go client, prompts, briefs, parsers, status-id source
+  adjudicate.py  claim-level check of an approved draft by a second blind model
   corpus.py      one case -> one admitted trace or one recorded reject; run, shards, manifest
   bench.py       case loading, validation, oracle, scoring, gate check, holdout
   freeze.py      content-hash freeze of the benchmark and the holdout
   leakcheck.py   exact and near-duplicate similarity, tickets and holdout replies
-  cli.py         demo / bench / trace / freeze / verify-frozen / leakcheck / teacher
+  cli.py         demo / bench / trace / freeze / verify-frozen / leakcheck / teacher / judge-bench / adjudicate
 bench/cases/     284 cases: 134 normal + 150 adversarial
                  (205 bank + 79 paraphrase: 24 honest, 55 sabotage)
 bench/holdout/review-01.jsonl  32 reviewer-authored replies, frozen, never trained on
@@ -375,18 +376,35 @@ added 2026-11-13 and the stage-4 bench rows 2026-11-14.
 | Bench, 27B + adapter (stage 4) | same entrypoint → `out/modal-bench-adapter.log` | adapter `full-20261114T201900Z` (186 steps, `ok`), bench window 2816; 284 cases, 1805 s, est. `$1.28`; Phase A **233 / 31 / 18 / 2**; 40 plan errors; `out/bench-adapter-284.jsonl` |
 | Phase B over the base artifact (stage 4) | `python -m shopagent.cli judge-bench --rows out/bench-base-284.jsonl --student base` | 101 judge calls, 0 invalid, 0 unavailable, 0 not scored; A+B **56 approved / 186 rejected / 39 escalated**; 61.4 s; `out/judged-base.jsonl` + manifest |
 | Phase B over the adapter artifact (stage 4) | `python -m shopagent.cli judge-bench --rows out/bench-adapter-284.jsonl --student adapter` | 233 judge calls, 0 invalid, 0 unavailable, 0 not scored; A+B **226 / 38 / 18**; 116.6 s; `out/judged-adapter.jsonl` + manifest |
-| Test suite | `python -m unittest discover -s tests -q` | `Ran 332 tests` · `OK`, exit 0 |
+| Adjudicated false approvals (stage 5) | `python -m shopagent.cli adjudicate --concurrency 8` | 334 rows adjudicated over 335 HTTP attempts (base 102, adapter 233), **0 invalid, 0 unavailable**; base 101 approved rows → adversarial 36: **2 unsupported** / 15 supported / 19 incomplete, honest 65: 5 / 38 / 22; adapter 233 → adversarial 118: **0** / 116 / 2, honest 115: 4 / 105 / 6; 152.7 s, time only; `out/adjudicated-{base,adapter}.jsonl` + `out/adjudicated.manifest.json` |
+| Test suite | `python -m unittest discover -s tests -q` | `Ran 363 tests` · `OK`, exit 0 |
 | Benchmark frozen | `python -m shopagent.cli verify-frozen` | `benchmark frozen: OK`, exit 0 |
 | Leak check over the corpus | `python -m shopagent.cli leakcheck --corpus data/train` | `178 sessions`, 284 cases, 92 holdout replies, four match lists empty, closest pair 0.75, `leak check: CLEAN`, exit 0 |
 
-**The case-kind rule counts a correct refusal as a false approval.** It marks
-every approved adversarial case as a false approval, but many adversarial tickets
-can be answered truthfully — the bench holds true statements, not only false
-claims — so that count is not a false-claim measure. What the stage-4 rows do
-support: the adapter follows both output contracts where base 27B writes tool
-plans as replies, and the judge moved 45 base rows off approval against 7 adapter
-rows. `SPEC.md` §7's "zero false approvals on a held-out adversarial set" stays
-**unmeasured**: neither holdout was touched, and every bench case is seen.
+**False approvals are now read off the drafts, not off the case kind.**
+`adjudicate` has a second model, `gpt-6-luna`, read each Phase A-approved draft
+against the ticket, the case state and the tool log the student had — never the
+kind, the expectation, a gate code or a Phase B verdict — and label the claims,
+one call per row, strict JSON, invalid answers counted separately and never
+coerced. The
+result in one line: the adapter wrote **no claim the log does not support — 0 of
+118** approved adversarial rows; base wrote **2 of 36**. The case-kind rule's 118
+was a labelling artefact: it counted approvals on trap tickets, where a correct
+refusal is a true statement, and 36 + 118 = 154 is the pair's total. Base's 41
+`incomplete` rows are tool plans sent as customer replies, which is a base defect
+the old figure hid.
+
+Read `unsupported` against the honest control: base 5/65 (7.7 %), adapter 4/115
+(3.5 %); with N-102 ruled a false positive (the state holds one shipment, so "the
+latest" is true) base 4/65 (6.2 %), adapter 3/115 (2.6 %). N-81 stays in both
+adapter readings and is flagged label-unstable — the same sentence labelled
+`incomplete` on base and `unsupported` on the adapter — so neither reading claims
+a verdict for it, and the accepted findings there are two. The rate is over
+adjudicated rows: 334 rows, 335 HTTP attempts. **The limit binds the number: this
+is one model's adjudication of a draft, not a human audit.** No person read the
+334 rows, the control measures disagreement rather than ground truth, every bench
+case is seen data, and `SPEC.md` §7's "zero false approvals on a held-out
+adversarial set" stays **unmeasured**: neither holdout was touched.
 
 Two holdout rows are caught but not exact: HR-21 and HR-22 are `REJECTED` where
 the reviewer wrote `ESCALATED`. Both name an address that contradicts state, and
@@ -488,12 +506,14 @@ Not proven yet:
   no-false-claim property remains the renderer's.
 - Phase B. The judge is wired, off by default, and now **measured on the bench**:
   it scored every Phase A-approved row of both stage-4 artifacts, with 0 invalid
-  and 0 unavailable answers. It has not judged either holdout, and its agreement
+  and 0 unavailable answers, moving base 101 → 56 and the adapter 233 → 226 — 45
+  and 7 rows off approval. It has not judged either holdout, and its agreement
   on this corpus is partly self-confirming because teacher and judge share one
-  model. Its false-approval count comes from the case-kind rule, which scores a
-  correct refusal as a false approval, so that figure is not a false-claim rate.
-  Phase B widens prose coverage; it makes no guarantee, and free-text coverage on
-  unseen wording stays unsolved.
+  model. Its moves are reported as moves, not as claims caught: the false-claim
+  reading comes from the stage-5 adjudicator, 0 of 118 adapter rows against 2 of
+  36 base rows, and that is one model's adjudication, not a human audit. Phase B
+  widens prose coverage; it makes no guarantee, and free-text coverage on unseen
+  wording stays unsolved.
 - **The teacher corpus is 178 traces, not 1,000+.** It comes from the frozen 284
   cases; hand-written seeds and schema-driven expansion (§3 of `SPEC.md`) are
   still Open. The two passes admitted 63% of cases; the rest are recorded

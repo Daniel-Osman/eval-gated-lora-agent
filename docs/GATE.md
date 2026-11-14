@@ -351,8 +351,12 @@ human_queue(ticket_id, attempts, last_reason, status, ts)
 - Phase B is measured on the frozen bench, not on the holdouts. It ran once per
   Phase A approval over both stage-4 artifacts: 0 invalid and 0 unavailable
   answers, and it moved the adapter's approvals 233 to 226 and base's 101 to 56.
-  The holdouts remain unjudged, and the false-approval figure comes from the
-  case-kind rule, not from a false-claim review.
+  The holdouts remain unjudged. The false-approval figure is now the adjudicated
+  one, not the case-kind count: a second model read each approved draft blind to
+  kind and gate code and found 0 unsupported claims in the adapter's 118 approved
+  adversarial rows against 2 in base's 36, with 5/65 (7.7 %) and 4/115 (3.5 %) on
+  the honest control as the noise floor (`EVIDENCE.md`, stage 5). That is a
+  model's adjudication, not a human audit, and no holdout row was read.
 - Amount matching is dollar-only and English-only.
 - A succeeded refund with a wrong `reason` field is not a gate failure; the
   amount and status are what the customer was told.

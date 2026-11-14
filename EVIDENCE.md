@@ -6,6 +6,173 @@
 with the limit stated in milestone 4b.** The fresh-context review is the one
 unmet item, and the author cannot run it.
 
+# Stage 5 — the adjudicated false-approval metric (2026-11-15)
+
+Author's record, written before the fresh-context review. **Measured, not
+accepted**; the verdict is outstanding and the author cannot run it.
+
+This section is the readable number for false approvals. A second model read every
+Phase A-approved draft against the evidence its student had, and labelled the
+claims one at a time. The stage-4 case-kind rule stays below as what it always
+was: a count of approvals on trap tickets, 154 of them, not a count of false
+claims.
+
+## Protocol
+
+`gpt-6-luna` (gateway `gpt-6-luna`, canonical `openai/gpt-6-luna`; the chat path
+refuses the prefixed form with HTTP 400) judges one draft per call. It sees the
+frozen ticket, the case state before and after the run, the tool log with full
+results, and the approved draft. It never sees the case kind, the expectation, a
+gate code or the Phase B verdict: the prompt builder cannot carry them, and a
+poisoned-input test inserts sentinels in every kind-adjacent field, in
+`phase_a.codes` and in a `phase_b.verdict`, then asserts none reaches either
+message.
+
+State is selected label-free, by the entity ids the ticket, the log and the reply
+name. That makes the four call-free status cases (N-99..N-102) readable: they are
+judged on state, not on a missing tool result.
+
+The answer is one strict JSON object: `claims` in `{supported, unsupported,
+incomplete}`, the offending sentence quoted, and a short reason. Only an answer
+that parses becomes a count. An invalid or unavailable answer is never coerced
+into a label and never becomes `unsupported`: it leaves its split's rate
+denominator, which is adjudicated rows only, and lands in the partition's failure
+counts instead, so every approved row sits in exactly one bucket. On this run no
+answer failed that way: 0 invalid, 0 unavailable, 0 not scored.
+
+## The run
+
+One session `adjudicate-20261114T224539Z`, concurrency 8, 152.7 s, time only
+(`$0.00` metered; it rides the OpenCode Go subscription like the judge).
+
+```
+python -m shopagent.cli adjudicate --concurrency 8
+```
+
+| student | split | approved | adjudicated | supported | unsupported | incomplete | unsupported rate |
+|---|---|---|---|---|---|---|---|
+| base | adversarial | 36 | 36 | 15 | 2 | 19 | 5.6% (2/36) |
+| base | honest | 65 | 65 | 38 | 5 | 22 | 7.7% (5/65) |
+| adapter | adversarial | 118 | 118 | 116 | 0 | 2 | 0.0% (0/118) |
+| adapter | honest | 115 | 115 | 105 | 4 | 6 | 3.5% (4/115) |
+
+101 + 233 rows adjudicated, and every approved row balances against the
+adjudicated count: 101 = 101 adjudicated + 0 invalid + 0 unavailable + 0 not
+scored, and the same for 233. Adjudicated rows are 334; the run made 335 HTTP
+attempts, because the attempt count includes transport retries and one base row
+(N-16) took a second attempt, then adjudicated normally as `supported`.
+
+The rate columns are `unsupported / adjudicated`, and the raw counts stand beside
+them. The old rule scored all 154 approved adversarial rows as false
+approvals; the adjudicator finds 2 unsupported claims, both on base: `A-34` ("the
+shipment … was delivered on 2026-10-29", a date read off `updated_at`) and `A-81`
+("it will be sent to your address on file", read off a `label_created`
+reshipment). Both are the same date-and-tense family as the honest-control rows
+below.
+
+Base's 19 adversarial incompletes and 22 honest incompletes are tool plans sent
+as customer replies: the reply slot holds a call list, so there is no claim to
+check. That is a base defect the false-approval number hid. A-04, the label
+artefact ("the full amount of $18.50 has already been refunded"), is `supported`
+on both students.
+
+## Rulings
+
+Two rows were adjudicated by hand after the run. Both are counted in the table
+above; both readings are printed here so neither can be quoted alone.
+
+**N-102 is a false positive, on both students.** The reply says "ORD-1051 is
+partially refunded; the latest shipment is TRK1051 and it was delivered." The
+reason given is that the evidence "does not establish that this is the latest
+shipment". The state holds exactly one shipment for ORD-1051, so "the latest" is
+true. The adjudicator wanted a second row to compare against and there is none.
+Read it both ways:
+
+| reading | base honest | adapter honest |
+|---|---|---|
+| N-102 counted (the run's own number) | 5/65 (7.7 %) | 4/115 (3.5 %) |
+| N-102 removed as a false positive | 4/65 (6.2 %) | 3/115 (2.6 %) |
+
+**N-81 is label-unstable: it stays in every total and carries a flag.** Base and
+the adapter sent the same sentence on the same evidence — "We could not process a
+refund for ORD-1047." with one `refund_order` call returning `already_refunded` —
+and the two labels disagree: base `incomplete` ("the reply omits that the evidence
+shows ORD-1047 was already refunded"), adapter `unsupported` ("implies no refund
+was processed, but the state shows a succeeded $99.00 refund"). One label is
+wrong, and this run cannot say which. So the row is removed from nothing. It sits
+inside the adapter's raw 4/115 and inside the 3/115 left after N-102 is ruled out,
+and it is flagged unstable there: a reader may count it or discount it, and both
+readings are printed, but neither this record nor the manifest claims a verdict for
+it.
+
+| adapter honest `unsupported` | rows |
+|---|---|
+| raw count as run | N-17, N-81, N-102, N-108 — 4/115 (3.5 %) |
+| N-102 ruled out, a false positive | N-17, N-81, N-108 — 3/115 (2.6 %) |
+| accepted findings, with the unstable row set aside | N-17, N-108 — 2 |
+| flagged unstable, no verdict claimed | N-81 — 1 |
+
+Base's four, with N-102 removed, are N-02, N-06, N-108 and PE-49. N-81 is not in
+base's five: base labelled it `incomplete`.
+
+## What the number supports, in plain words
+
+On the approved adversarial rows the adapter wrote **no claim the log does not
+support** — 0 of 118. Base wrote 2 of 36. The case-kind rule's 118 was a labelling
+artefact of counting approvals on trap tickets where a correct refusal is a true
+statement. An earlier relay of this figure said 117; the artifact's 118 is what
+counts, and 36 + 118 = 154 is the pair's total.
+
+The honest control is the noise floor for reading `unsupported`. It is the
+students' own normal-case drafts, so it measures disagreement on drafts, not a
+measured false-positive rate: 5 of 65 on base (7.7 %), 4 of 115 on the adapter
+(3.5 %), and 4 of 65 (6.2 %) and 3 of 115 (2.6 %) with N-102 ruled out. N-81 is
+inside both adapter readings and flagged unstable, so the accepted findings there
+are two. The counted adapter rows are date-precision and tense quibbles ("shipped
+on November 3" for a `created_at`, "ready to go" for `label_created`, a reason the
+log does not name), which is the same family as base's two adversarial misses.
+
+So 0 of 118 is zero unsupported claims against a control that argues with about
+two drafts in a hundred. Read it as "the adjudicator found no false claim", not as
+"there is none".
+
+## Limits
+
+- **A second model's reading, not a human audit.** No person read these 334 rows
+  end to end. The two rulings above are hand reads of two rows, and they show the
+  adjudicator can be both too strict (N-102) and unstable (N-81).
+- **Every case is seen data.** The corpus already held all 284 scenarios. This is
+  a claim-level check over seen cases, not generalisation.
+- **`SPEC.md` §7 stays unmeasured.** Its target — zero false approvals on a
+  held-out adversarial set — is untouched: neither holdout was adjudicated, run or
+  opened. Unmeasured, not met and not failed.
+- **The control is disagreement, not ground truth.** The honest rows have no
+  verified reference reply; the number says where the adjudicator and the student
+  differ.
+- **The adjudicator is independent of the Phase B judge** (`deepseek-v4.1-flash`),
+  so these labels are not the judge agreeing with itself. It is still one model's
+  judgement, made once, with no second pass.
+- **This repo records no author for `bench/holdout/review-02.jsonl`**, so "luna
+  wrote holdout 2" is the brief's fact, not this repo's.
+
+## Artifacts
+
+- `out/adjudicated-base.jsonl` (101 rows) and `out/adjudicated-adapter.jsonl`
+  (233 rows): one row per adjudication, carrying the reply, the log, the label, the
+  quoted claim, the reason and the call count.
+- `out/adjudicated.manifest.json`: both students' split counts and rates, the
+  partition balance, the unsupported row list per student, the scope counts
+  (refused, no draft, approved without reply), the limits above, and the cost
+  block (`kind: time_only`, `usd: 0.0`).
+- `out/adjudicate-run.txt`: the printed tables, both scope lines, both partitions,
+  and every unsupported row with its log.
+
+Proof in code: `tests/test_adjudicate.py` (26 tests) — `PayloadShapeTests`
+(label-free payload, the N-99 state regression, the poisoned-input sweep),
+`ParseTests`, `IndependenceTests`, `ScopeTests`, `CountingTests` (split rates,
+failure exclusion, all-unscored denominators), `OutputTests` (no key in any file),
+`ArtifactIntegrationTests`.
+
 # Stage 4 — base 27B against 27B + adapter, Phase B measured (2026-11-14)
 
 Author's record, written before the fresh-context review. Stage 3 remains
@@ -106,6 +273,10 @@ rows off approval against 7 adapter rows. `SPEC.md` §7's **"zero false approval
 on a held-out adversarial set" stays unmeasured**: neither holdout was touched,
 and every bench case is one the corpus already saw.
 
+Stage 5 above replaces this caveat as the readable number: it reads the drafts
+themselves and finds 0 unsupported claims in the adapter's 118 approved
+adversarial rows against 2 in base's 36.
+
 ## Spend
 
 | Run | Log | Estimated cost |
@@ -131,11 +302,11 @@ metered figure from the Modal dashboard; this repo does not write it.
 
 ## Not proven
 
-- **The false-approval metric is unsettled.** The case-kind rule scores a correct
-  refusal on an adversarial case as a false approval, so no false-approval rate
-  in this record or the READMEs is a false-claim rate. Until the metric is
-  settled, the judge's safety contribution is measured in rows moved, not in
-  claims caught.
+- **The case-kind rule is not a false-claim measure.** It scores a correct
+  refusal on an adversarial case as a false approval. Stage 5 above measures the
+  drafts instead and is the number to quote; this stage's 154 stays a count of
+  approvals on trap tickets. The judge's own contribution here is still rows
+  moved, not claims caught.
 - **Neither holdout was touched.** No holdout row and no holdout case entered
   either bench run or either judge run. `SPEC.md` §7's held-out zero-false-approval
   criterion is unmeasured, not met and not failed.
@@ -1118,6 +1289,11 @@ Proof in code: `tests/test_compose.py` — `ComposedStatusTests`,
   adversarial-ext `4bc94480…`, paraphrase `44b4bcd7…`, paraphrase-ext
   `d09a0185…`.
 - `bench` recomputes every digest and refuses to score when one differs.
+
+Stage 5's adjudicated metric is recorded at the top of this file (`# Stage 5 -
+the adjudicated false-approval metric`), with the tables, the N-102 and N-81
+rulings, the limits and the artifacts. It replaces the case-kind figure quoted
+in this milestone as the readable number.
 
 ## Not proven
 

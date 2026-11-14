@@ -601,6 +601,166 @@ def cmd_judge_bench(args) -> int:
     return 0
 
 
+def cmd_adjudicate(args) -> int:
+    """A second opinion on every Phase A-approved draft in the artifacts.
+
+    Measures the drafts, not the gate: no write path, no retry, no holdout. One
+    model call per in-scope row; invalid or unavailable answers are counted.
+    """
+    import os
+    import time
+    from datetime import datetime, timezone
+
+    from .adjudicate import (
+        MODEL,
+        Adjudicator,
+        AdjudicatorUnavailable,
+        manifest_payload,
+        score,
+        sha256_file,
+        unsupported_rows,
+        write_manifest,
+        write_outputs,
+    )
+    from .bench import load_all_cases
+    from .freeze import read, verify
+    from .judgebench import default_student, load_rows
+
+    paths = []
+    for item in args.rows:
+        path = Path(item)
+        if not path.is_absolute():
+            path = ROOT / path
+        if not path.exists():
+            print(f"no rows file: {path}")
+            return 2
+        paths.append(path)
+    if args.student and len(paths) > 1:
+        print("--student names one artifact; use the default with more than one --rows")
+        return 2
+    if read() is not None:
+        ok, problems = verify()
+        if not ok:
+            print("BENCHMARK FROZEN CHECK FAILED")
+            for problem in problems:
+                print(f"  - {problem}")
+            print("Refusing to adjudicate against a modified benchmark.")
+            return 2
+
+    key = os.environ.get("OPENCODE_API_KEY")
+    if not key:
+        print("no adjudicator key: set OPENCODE_API_KEY. The key is never read from a file.")
+        return 2
+    session_id = args.session_id or (
+        f"adjudicate-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    )
+    try:
+        client = Adjudicator(
+            session_id=session_id, model=args.model, api_key=key, timeout=args.timeout
+        )
+    except (AdjudicatorUnavailable, ValueError) as exc:
+        print(f"adjudicator is not configured: {exc}")
+        return 2
+
+    cases = load_all_cases()
+    started = time.monotonic()
+    students: list[dict] = []
+    for path in paths:
+        student = args.student or default_student(path)
+        rows = load_rows(path)
+        try:
+            result = score(rows, client, cases=cases, concurrency=args.concurrency)
+        except ValueError as exc:
+            print(f"cannot adjudicate: {exc}")
+            return 2
+        scope = result["scope"]
+        summary = result["summary"]
+        partition = summary["partition"]
+
+        print(f"student: {student}   rows: {path}")
+        print(
+            f"scope: {scope['artifact_rows']} rows = {scope['in_scope']} in scope"
+            f" + {scope['refused']} refused after Phase A"
+            f" + {scope['no_draft']} no-draft"
+            f" + {scope['approved_without_reply']} approved without a reply"
+        )
+        if not scope["balances"]:
+            print("  WARNING: the artifact partition does not balance")
+        print(
+            f"partition: {partition['rows']} = {partition['adjudicated']} adjudicated"
+            f" + {partition['invalid']} invalid"
+            f" + {partition['unavailable']} unavailable"
+            f" + {partition['not_scored']} not scored"
+        )
+        if not partition["balances"]:
+            print("  WARNING: the adjudication partition does not balance")
+        print()
+        print(
+            "                           approved  adjudicated  supported  unsupported"
+            "  incomplete  unsupported rate"
+        )
+        for label, block in (("adversarial", summary["adversarial"]), ("honest", summary["honest"])):
+            print(
+                f"  {label:<24} {block['approved']:>9} {block['adjudicated']:>12}"
+                f" {block['supported']:>10} {block['unsupported']:>12}"
+                f" {block['incomplete']:>11}  {block['unsupported_rate']:.1%}"
+                f" ({block['unsupported']}/{block['adjudicated']})"
+            )
+            if block["invalid"] or block["unavailable"] or block["not_scored"]:
+                print(
+                    f"    not adjudicated here: invalid {block['invalid']},"
+                    f" unavailable {block['unavailable']}, not scored {block['not_scored']}"
+                )
+        control = summary["normal_case_control"]
+        print(
+            f"normal-case control: {control['unsupported']}/{control['adjudicated']}"
+            f" honest drafts marked unsupported ({control['rate']:.1%}) - disagreement"
+            f" on student drafts, not a measured false-positive rate"
+        )
+        print()
+        print("UNSUPPORTED ROWS")
+        for row in unsupported_rows(result["rows"]):
+            print(f"  {row['id']} ({row['kind']}, {row['path']}) claim: {row['claim']!r}")
+            print(f"    reason: {row['reason']}")
+            for line in row["log"]:
+                print(f"    log: {line}")
+        if not unsupported_rows(result["rows"]):
+            print("  none")
+        print()
+
+        written = write_outputs(ROOT / args.out_dir, student, path, result)
+        print(f"  wrote {written['rows']}")
+        students.append(
+            {
+                "student": student,
+                "rows_path": str(path),
+                "rows_sha256": sha256_file(path),
+                "scope": scope,
+                "summary": summary,
+                "rows": result["rows"],
+            }
+        )
+
+    elapsed = time.monotonic() - started
+    manifest = write_manifest(
+        ROOT / args.out_dir,
+        manifest_payload(
+            students=students,
+            model=client.model,
+            gateway=client.base_url,
+            session_id=session_id,
+            concurrency=args.concurrency,
+            calls=client.requests,
+            wall_seconds=elapsed,
+        ),
+    )
+    print(f"session: {session_id}  model: {client.model}  gateway: {client.base_url}")
+    print(f"http attempts: {client.requests}   wall: {elapsed:.1f}s   cost: time only")
+    print(f"manifest: {manifest}")
+    print("holdouts: untouched; cases: seen data; nothing committed")
+    return 0
+
+
 def cmd_tools(_args) -> int:
     from .tools import TOOL_SPECS
 
@@ -786,6 +946,32 @@ def build_parser() -> argparse.ArgumentParser:
     judge_bench.add_argument("--session-id", default="", help="one stable x-opencode-session id")
     judge_bench.add_argument("--out-dir", default="out", help="where judged-<student>.* is written")
     judge_bench.set_defaults(func=cmd_judge_bench)
+
+    adjudicate = sub.add_parser(
+        "adjudicate",
+        help="second opinion on Phase A-approved drafts: supported / unsupported / incomplete",
+    )
+    adjudicate.add_argument(
+        "--rows",
+        nargs="+",
+        default=["out/bench-base-284.jsonl", "out/bench-adapter-284.jsonl"],
+        help="bench JSONL artifacts (default: both stage-4 artifacts)",
+    )
+    adjudicate.add_argument(
+        "--student", default="", help="artifact name, one artifact only (default: from --rows)"
+    )
+    adjudicate.add_argument(
+        "--model",
+        default="gpt-6-luna",
+        help="the pinned independent model (only gpt-6-luna is accepted)",
+    )
+    adjudicate.add_argument(
+        "--concurrency", type=int, default=8, help="parallel adjudications, at most 8"
+    )
+    adjudicate.add_argument("--timeout", type=float, default=60.0, help="per-request timeout in seconds")
+    adjudicate.add_argument("--session-id", default="", help="one stable x-opencode-session id")
+    adjudicate.add_argument("--out-dir", default="out", help="where adjudicated-* is written")
+    adjudicate.set_defaults(func=cmd_adjudicate)
 
     tools = sub.add_parser("tools", help="print tool JSON schemas")
     tools.set_defaults(func=cmd_tools)
