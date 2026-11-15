@@ -1,10 +1,12 @@
-# Evidence — teacher corpus, one adapter, the load check
+# Evidence — teacher corpus, one adapter, the measured cycle
 
-2026-11-13 · author's run (preliminary, not the PASS) · tree not committed
+2026-11-15 · author's record · tree not committed
 
-**Status: gates green on this tree, and composed mode closed on 14 seen cases
-with the limit stated in milestone 4b.** The fresh-context review is the one
-unmet item, and the author cannot run it.
+**Status: frozen 2026-11-15.** Training stopped on adapter
+`full-20261114T201900Z`; stages 1–4 are done, stage 5's iteration runs were not
+attempted, stage 6 is next. The sections run newest first. The close — what is
+proven, caveated, unmeasured and deliberately not done — is
+[Where this stands](#where-this-stands-2026-11-15) at the end of this file.
 
 # Stage 5 — the adjudicated false-approval metric (2026-11-15)
 
@@ -1310,3 +1312,98 @@ in this milestone as the readable number.
 - **Independent review pending.** Helm spawns `helm/shipwright-reviewer` for the
   PASS that counts. Not run.
 - **Nothing committed.** No commit, no tag.
+
+# Where this stands (2026-11-15)
+
+The freeze closes training. This section is the index to the record above, not a
+second record: it adds no number, and every number here is quoted from a section
+above it.
+
+What is frozen: adapter `full-20261114T201900Z` — Qwen3.8-27B, 4-bit QLoRA, 263
+written rows from 178 teacher traces, 40 % composed per epoch, 186 steps, loss
+0.2051 → 0.0840 (first-five → last-five means), est. `$0.8592`, at
+`/vol/runs/full-20261114T201900Z/adapter` on the Modal Volume. It is not in this
+repo.
+
+**No milestone in this file carries a fresh-context PASS.** Milestone 2,
+milestone 3, milestone 4, milestone 4b, stage 4 and the stage-5 adjudication slice
+are each verified on green commands and unaccepted by the rule that an author
+never signs its own stage. The freeze is Daniel's decision on 2026-11-15 and makes
+none of them accepted. Stage 5's further iteration runs were not attempted, by
+decision: three more runs on 17,868 supervised tokens would chase noise, because
+the corpus is the constraint. Not run is not failed.
+
+## Proven
+
+- The gate reads database state, not the agent's log. A forged audit row does not
+  satisfy it, a rejected attempt writes no `replies` row, and an escalated draft
+  reaches `human_queue` only. The gate owns the commit.
+- Composed mode has no text channel: ids and an integer amount in, the sentence
+  rendered from the row the action wrote. A failed action renders failure; one
+  sentence names one shipment.
+- The benchmark is frozen by content hash and `bench` refuses to score changed
+  bytes. The leak check is a gate, and the teacher corpus is gate-checked before a
+  trace reaches a shard.
+- On the fixed suites, Phase A approves 229 of 229 honest replies and never
+  approves a sabotage reply: 150 known-bad replies give 144 rejected and 6
+  escalated.
+- Every number in the README table is bound to the command that printed it, with
+  three named exceptions: the free-text 12/32, which has neither a command nor a
+  retained artifact; both `modal run …` lines; and the metered spend.
+
+## Measured, but caveated
+
+- **The adapter beats base, 233 approvals against 101**, and the caveat is the
+  comparison: traces from 178 of the 284 scenarios trained the adapter, so its
+  number is partly recall, while base was never trained and its 101 is neither
+  recall nor a generalisation measure. No accuracy column exists for action, final
+  state or reply facts.
+- **The adapter wrote no unsupported claim in 118 approved adversarial drafts;
+  base wrote 2 in 36.** One model's reading, made once, on seen cases. The honest
+  control argues with about two drafts in a hundred (5/65 base, 4/115 adapter), so
+  the zero means no false claim was found, not that none exists. Two rows carry
+  hand rulings: N-102 is a false positive, N-81 is label-unstable.
+- **Phase B moved 45 base rows and 7 adapter rows off approval**, with 0 invalid
+  and 0 unavailable answers. Judge and teacher are one model, so its agreement is
+  partly self-confirming, and its moves are reported as moves, not as claims
+  caught.
+- **Phase A escalated 39 of 284 base rows and 18 of 284 adapter rows.** These are
+  counts, not a false-escalation measure; only the scripted honest control
+  (229/229 approved, 0 escalated) measures false escalation, on hand-written
+  replies. Base's 97 tool-plan-in-reply rows are a plan defect, not the cause of
+  its 39.
+- **The composed shape holds on 14 of 14 cases**, 13 of them trained and N-104
+  the val row. The schema is proven; the choice of action is not.- **The loss fell 0.2051 → 0.0840 on 17,868 supervised train-split tokens**
+  (18,260 with the in-memory EOS, 19,693 stored across both splits). The model
+  fitted those tokens; the only behaviour evidence is the 14/14 schema check.
+- **The cycle sits inside the credit**: `$5.4430` across eleven run estimates,
+  `$11.10346860` metered, `$0.00` billed, read from the Modal dashboard.
+
+## Unmeasured
+
+- **`SPEC.md` §7's held-out criterion.** No student benchmark, no Phase B
+  judgeship and no adjudication has run on either holdout. The gate's own scores
+  there — 32/32 remediation-targeted, 43/60 reported and not gated — are gate
+  results and answer a different question.
+- **Whether each judge move was right**, and label stability beyond N-81. No
+  human read the 334 adjudicated rows or the 52 moved ones.
+- **Free-text generalisation beyond 12/32.** That figure is one historical
+  observation on an unseen sample: the sample and its replies are not in this
+  repo, no command reproduces it, and no artifact was kept.
+- **Cold-start time on the A10 scale-to-zero path.** Stage 6 measures it.
+- **Any model behaviour on a case the corpus never held.** The corpus is 178
+  traces of 284 frozen scenarios, and both holdouts are outside it.
+
+## Deliberately not done
+
+- **Further iteration runs.** Stopped at the freeze: the corpus, not the run
+  count, is the constraint.
+- **Corpus growth to `SPEC.md` §3's 1,000+ sessions.** The seeds and the
+  schema-driven expansion stay unwritten, and the shortfall is recorded rather
+  than filled.
+- **Scoring either holdout, and a second adjudication pass** to turn the one
+  hand-ruled instability into a rate.
+- **A composed address change, a composed action-choice score, and a 7B or RL
+  variant.** Out of scope by `SPEC.md` §5 and §9.
+- **Any commit.** The tree is uncommitted at the freeze by instruction, not by
+  oversight.

@@ -10,6 +10,31 @@ between "the model's claim" and "what actually happened". Locked stack: a 27B
 Qwen3.8 student tuned 4-bit with Unsloth on Modal, DeepSeek 4.1 Flash as teacher
 and judge, served by Modal vLLM, inside the $30 Modal credit.
 
+## Freeze (2026-11-15)
+
+**Daniel's call: training stops here.** No further iteration, no further corpus
+growth. The frozen artifact is `full-20261114T201900Z`: 27B 4-bit QLoRA, 263
+written rows from 178 teacher traces, 40 % composed per epoch, 186 steps, loss
+0.2051 -> 0.0840 (first-five -> last-five means; logged points 0.2769 -> 0.0975),
+est. `$0.8592`, at `/vol/runs/full-20261114T201900Z/adapter` on the Modal Volume.
+
+The reason, in the same words each document uses: three more runs on 17,868
+supervised train-split tokens would chase noise. The corpus, not the run count, is
+the constraint, and `SPEC.md` §3's 1,000+ target stands unmet. Stage 5's iteration
+runs were therefore **not attempted**; that is a decision, not a failure, and no
+document calls it one.
+
+What the freeze closes: the search for a better adapter on this corpus, and the
+iteration stage itself. What it does not close: the held-out metric, the corpus
+shortfall, the accuracy columns, and the gap between the gate's guarantee and
+free-text detection. Stage 6 serving is next.
+
+Stage 4 and every milestone before it are verified, and none carries a
+fresh-context PASS: milestone 2, milestone 3, milestone 4, milestone 4b, stage 4
+and the stage-5 adjudication slice are all unaccepted by the rule that an author
+never signs its own stage. Daniel closed training at the freeze; that decision
+does not make them accepted, and every document here says so.
+
 ## Decisions held
 
 - Benchmark before training data, frozen by content hash. `bench` refuses to
@@ -33,6 +58,8 @@ and judge, served by Modal vLLM, inside the $30 Modal credit.
 ## Evidence
 
 - `README.md` numbers table, each row bound to a command.
+- `EVIDENCE.md` § Where this stands (2026-11-15) — the closing index: proven,
+  measured but caveated, unmeasured, deliberately not done.
 - `docs/BENCHMARK.md` for case format, holdout shape and the freeze rule.
 - `docs/GATE.md` for the rules, full code table, contract and retry semantics.
 - `docs/COMPOSED-MODE.md` for the composed promise, the failure, the fix and the
@@ -40,10 +67,56 @@ and judge, served by Modal vLLM, inside the $30 Modal credit.
 - `EVIDENCE.md` for the measured runs, spends and gate outputs.
 - `out/bench-results.json` after `python -m shopagent.cli bench`.
 
+## Stage 5 status, as it stood before the freeze
+
+Moved out of `NOW.md` when the freeze replaced it. The stage-5 adjudication slice
+ran and is measured; its review is outstanding; no further iteration run followed.
+
+Stage 5 slice 1 **settles the false-approval metric**, measured, not accepted:
+`gpt-6-luna` adjudicated every Phase A-approved draft blind to kind, expectation
+and gate code. Base 101 approved: adversarial 36 -> 15 supported / 2 unsupported
+/ 19 incomplete, honest 65 -> 38 / 5 / 22. Adapter 233 approved: adversarial 118
+-> 116 / 0 / 2, honest 115 -> 105 / 4 / 6. 334 rows adjudicated over 335 HTTP
+attempts, 0 invalid, 0 unavailable, 0 not scored; 152.7 s. The old case-kind rule
+scored 154 approvals as false approvals; the adjudicator finds 2 and 0 unsupported
+claims, and base's 19 incompletes are tool plans sent as replies.
+
+Two rows were ruled by hand. `N-102` is a false positive: the state holds one
+shipment, so "the latest" is true - with it base 5/65 and adapter 4/115, without
+it base 4/65 (6.2 %) and adapter 3/115 (2.6 %). `N-81` is label-unstable: both
+students sent the same sentence on the same log and the labels split, base
+`incomplete`, adapter `unsupported`; it stays in the adapter's totals, flagged
+unstable, so it carries no verdict. All eleven Modal estimates total `$5.4430`,
+metered `$11.10346860`, billed `$0.00`.
+
+## Superseded next steps (2026-11-15)
+
+The four items that stood in `NOW.md` before the freeze, and where each went.
+
+1. "Repeat the adjudication in a fresh session over both artifacts, so `unstable`
+   becomes a measured rate, then fix the strictness `N-102` exposed." Not done.
+   A second pass is listed as deliberately not done in `EVIDENCE.md`.
+2. "Stage 5 or 6: run the two holdouts with Phase B on, or serve the student on
+   Modal vLLM." Split: serving became stage 6; the holdouts stay untouched.
+3. "Score the composed mode, not just its shape: the action choice has no number
+   yet." Still open - the composed student is proven on the schema only.
+4. "The two adapter adversarial `incomplete` rows (A-62, A-84) need a ruling."
+   Still open, and unfixed: they are adequacy questions, not false claims.
+
 ## Verified history
 
 Moved out of `NOW.md` to keep it inside the line budget. `NOW.md` carries the
 current verification line only.
+
+Verified 2026-11-15 (adjudication slice, before the freeze):
+`python -m unittest discover -s tests -q` exit 0 (`Ran 363 tests`, `OK`, 26 of
+them `tests/test_adjudicate.py`); `git diff --check` exit 0;
+`python -m shopagent.cli adjudicate --concurrency 8` exit 0 -> 334 rows
+adjudicated over 335 HTTP attempts (base 102, adapter 233), 0 invalid, 0
+unavailable, 0 not scored, 152.7 s, writes `out/adjudicated-base.jsonl`,
+`out/adjudicated-adapter.jsonl` and `out/adjudicated.manifest.json`; the counts in
+`EVIDENCE.md` were read back from `out/adjudicated.manifest.json` and
+`out/adjudicate-run.txt`; `verify-frozen` still OK.
 
 Verified 2026-11-14 on this tree:
 `python -m shopagent.cli judge-bench --rows out/bench-base-284.jsonl

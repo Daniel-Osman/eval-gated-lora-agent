@@ -124,15 +124,23 @@ weaken the no-guarantee rule above.
 
 ## 6. Stages
 
-1. **Harness - done.** 171 tests OK; 284 cases and the 32-case holdout frozen;
-   composed mode shipped; free-text limit measured at 12/32.
-2. **Teacher data.** Grow the benchmark to 200+ and freeze it. Then seeds,
-   sessions, validators, leak check.
-3. **Train.** Qwen3.8-27B 4-bit QLoRA on Modal A100 40 GB.
-4. **Measure.** 27B base vs 27B + adapter on the same frozen benchmark. Wire
-   Phase B to the DeepSeek judge in this stage.
-5. **Iterate.** 3-4 runs inside the credit.
-6. **Serve.** Modal vLLM on A10 24 GB, scale to zero, plus a browser demo.
+| # | Stage | Status |
+|---|---|---|
+| 1 | **Harness** | **Done.** 171 tests OK; 284 cases and the 32-case holdout frozen; composed mode shipped; free-text limit measured at 12/32. |
+| 2 | **Teacher data** | **Done.** Benchmark grown to 284 and frozen before any teacher call; 178 admitted traces of 284 cases, gated, manifested and leak-checked. §3's 1,000+ target stands unmet, and the freeze below records it as the constraint on everything after. |
+| 3 | **Train** | **Done.** Qwen3.8-27B 4-bit QLoRA on a Modal A100 40 GB. Adapter `full-20261114T201900Z`: 263 written rows from 178 teacher traces, 40 % composed per epoch, 186 steps, loss 0.2051 → 0.0840 (first-five → last-five means), est. `$0.8592`, at `/vol/runs/full-20261114T201900Z/adapter` on the Volume. |
+| 4 | **Measure** | **Verified; no fresh-context PASS is recorded, so unaccepted by this spec's own rule.** Both students answered all 284 frozen cases; Phase B scored every Phase A approval; the adjudicator measured the claims. Daniel closed training here on 2026-11-15: an owner's decision, not a verdict. |
+| 5 | **Iterate** | **Further runs not run by decision (2026-11-15).** Three more runs on 17,868 supervised tokens would chase noise: the corpus is the constraint, not the run count, and §3's 1,000+ target is unmet. The stage-5 adjudication slice did run; it is verified and records no fresh-context PASS. Not run is not failed. |
+| 6 | **Serve** | **Next.** Modal vLLM on A10 24 GB, scale to zero, plus a browser demo. |
+
+Training stops at the freeze: no third iteration, no further corpus growth. The
+comparison in §7 is against the adapter named above.
+
+**No milestone here carries a fresh-context PASS.** Milestone 2, milestone 3,
+milestone 4, milestone 4b, stage 4 and the stage-5 adjudication slice are each
+verified on green commands and unaccepted by the rule below. The freeze is
+Daniel's decision; it does not make any of them accepted, and no document should
+say it does.
 
 Each stage ends on a gate: green commands, quoted output, and a fresh-context
 review. The author never signs its own stage.
@@ -149,6 +157,38 @@ review. The author never signs its own stage.
 - **Every number reproducible by a command**, printed in the README table next
   to the number.
 - The **full cycle fits inside $30**.
+
+### Verdict at the freeze (2026-11-15)
+
+1. **Met on partly-seen data.** The adapter was approved on 233 of 284 cases
+   under Phase A, base 27B on 101. The caveat is part of the verdict: the teacher
+   was briefed on all 284 scenarios and traces from 178 of them trained the
+   adapter, so its number is partly recall; base trained on nothing, so its 101 is
+   neither recall nor a generalisation measure. Neither holdout scored either
+   student.
+2. **Unmeasured.** No student benchmark, no Phase B judgeship and no
+   adjudication has run on either holdout. The gate's own holdout scores (32/32
+   remediation-targeted, 43/60 reported and not gated) are gate results, not this
+   criterion. Unmeasured is not met and not failed.
+3. **Reported, and only partly measured.** Phase A escalated 39 of 284 base rows
+   (13.7 %) and 18 of 284 adapter rows (6.3 %); Phase A + B left both counts
+   unchanged. Which of those escalations were *false* is not measured. The only
+   false-escalation evidence is the scripted honest control, 229/229 approved and
+   0 escalated, and that is hand-written replies. Base's 97 tool-plan-in-reply
+   rows are a plan defect, not an explanation of its 39.
+4. **Met as the renderer's property.** The frozen adapter parses and matches all
+   14 composed cases in the corpus (`out/modal-check5.log`), all seen; the
+   no-false-claim property itself belongs to `shopagent/compose.py` and its tests,
+   not to the student.
+5. **Partly met.** The README table binds a command to every number this repo
+   produced. Three gaps are named beside their numbers: the free-text 12/32 has no
+   command in this repo and no retained artifact, both `modal run …` lines are
+   `Unverified:` in the stage-4 record, and the metered `$11.10346860` is a Modal
+   dashboard read that no command here prints.
+6. **Met to the freeze.** Eleven Modal estimates total `$5.4430`; metered
+   `$11.10346860`; billed `$0.00`, because credits cover it. Stage 6 serving has
+   not run, so its spend is not in the figure: this is the cycle so far, not a
+   finished cycle.
 
 ## 8. Limits to record
 
