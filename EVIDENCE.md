@@ -1,6 +1,6 @@
 # Evidence — teacher corpus, one adapter, the measured cycle
 
-2026-11-15 · author's record · tree not committed
+2026-11-15 · author's record · committed through `6073ba7`, this slice uncommitted
 
 **Status: frozen 2026-11-15, served 2026-11-16.** Training stopped on adapter
 `full-20261114T201900Z`; stages 1–4 are done, stage 5's iteration runs were not
@@ -43,6 +43,9 @@ proxies the agent's health endpoint, and calls `Agent.serve` over the Modal SDK.
 | Warm free text | `POST /run` with ticket "Hi, my order ORD-1013 has not arrived. What is going on?" | **9 s wall**, **4.432 s** in request, **2 generations**; plan `[{"name":"get_order","args":{"order_id":"ORD-1013"}}]`; reply "Your order ORD-1013 for one Linen throw ($34.99) shows as paid, and its DHL shipment SHP-1013 is marked delivered with tracking number TRK1013." | `out/serve-demo-freetext.json` |
 | Scale-down | `modal container list --json` after ~2 min idle | only the demo app's container; **agent containers: 0** | — |
 | Unknown preset through `/run` | `POST /run {"scenario":"N-999"}` | **HTTP 400**, detail verbatim below | — |
+| Unknown preset, refused at the web layer | same call, warm cache and warm health | **HTTP 400 in 0.96 s**; no line added to the agent app log, so no model container woke | — |
+| Unknown preset, cold health function | same call after health scaled down | **HTTP 400 in 4.85 s**; no `engine: ready` line added | — |
+| Cold forward, good preset | `POST /run {"scenario":"N-100"}` after the 400s | **319 s wall**; `engine.init_seconds 301`; **200**, **APPROVED**, `matches_required_calls true` | — |
 | Browser | click **Run N-104** | panel filled end to end | `out/demo-n104.png` |
 
 **Scale-down, the sequence worth quoting:** `modal container list --json` printed
@@ -86,23 +89,38 @@ working, not the model working.
    parses it; a test asserts a non-JSON value raises out of `serve` instead of
    being coerced.
 
-## The flaw left open
+## The refusal at the web layer
 
-Validation runs inside the model container, so an unknown preset id wakes the A10
-and pays a ~5-minute cold start before it can answer 400. The page offers only
-known presets, so a visitor cannot hit it; a caller can. The cheap fix is to
-validate `scenario` against the preset list in the demo app (which already proxies
-`/health`) or in a small CPU function. Named as the next improvement, not built.
+An unknown `scenario` no longer reaches the model container. The demo caches the
+preset ids from the agent's model-free `/health`, refreshes the list once on a
+miss, and answers **HTTP 400** in its own copy of `serve.app`'s sentence before
+the GPU RPC; when `/health` is unreadable it fails open and forwards, so a stale
+list cannot turn a good request into a 400. The 400s cost **0.96 s** with a warm
+cache and warm health and **4.85 s** with a cold health function.
+`modal app logs eval-gated-lora-agent` holds one container start and one
+`engine: ready in 301.0s` line, both from the 319 s N-100 forward call in the
+measurements table; neither 400 added a line, so no model container initialised
+for either.
+
+The earlier behaviour stays in the record: validation ran inside the model
+container, an unknown id woke the A10, and the caller paid the cold start (about
+18 s of container start plus 291.4 s of engine init) before the same 400. The
+page offered only known presets, so a visitor could not hit it; a caller could.
 
 ## Spend
 
 `python -m modal billing summary --for "this month" --json` printed metered
-**17.18067970**, billed **0.00** (credits). `out/serve-billing-before.json`
-**14.36375475** and `out/serve-billing-after.json` **14.78476210** are the
-baselines; the first endpoint measurement cost **$0.42100735**, and the deploy and
-demo verification since then is **17.18067970 − 14.78476210 = $2.39591760**,
-which includes image builds, failed attempts and four cold starts. Metered, not
-estimated, and not itemised.
+**18.16068483**, billed **0.00** (credits), read at 21:51 on 2026-11-16 with its
+output not retained here. The stage-6 record read **17.18067970**; the read before
+the last cold forward call was **17.90068367**, and the reviewer's read after that
+call **17.97068375**, also with no output retained. The counter moves with use, so
+no snapshot is a bill. `out/serve-billing-before.json` **14.36375475** and
+`out/serve-billing-after.json` **14.78476210** are the baselines; the first
+endpoint measurement cost **$0.42100735**, and the deploy, demo verification and
+web-layer check since then are **18.16068483 − 14.78476210 = $3.37592273**:
+**$2.39591760** by the stage-6 record and **$0.98000513** after it. That includes
+image builds, failed attempts and five cold starts. Metered, not estimated, and
+not itemised.
 
 ## Not proven
 
@@ -120,19 +138,23 @@ estimated, and not itemised.
   so two long requests cannot be in flight together. Load behaviour is unmeasured.
 - **The browser frame is one case.** N-104 is the validation row, not a sample.
 - **Not accepted.** The fresh-context verdict is outstanding; Helm spawns
-  `helm/shipwright-reviewer` for the PASS that counts. Nothing committed.
+  `helm/shipwright-reviewer` for the PASS that counts. The stage-6 checkpoint is
+  commit `6073ba7`; the web-layer check is uncommitted.
 
 ## Verdict
 
 Proven: both endpoints answer, the container scales to zero and back (0 agent
 containers, a 309 s cold request with request_number 1, then 0 again), the
 demo's run path returns the gate's verdict and the composed reply, an unknown
-preset returns the endpoint's own 400 text and a malformed body is refused with a
-400 before the hop, and no key or secret reaches either served image.
+preset returns the endpoint's own 400 text without invoking the model (0.96 s
+warm, 4.85 s with a cold health function, no engine line in the app log), a
+malformed body is refused with a 400 before the hop, and no key or secret
+reaches either served image.
 
-Measured but not itemised: 17.18067970 metered this month, 0.00 billed, of
-which 2.39591760 came after the first endpoint measurement and covers image
-builds, failed attempts and four cold starts. `SPEC.md` 13.3 stays open:
+Measured but not itemised: 18.16068483 metered this month, 0.00 billed, of
+which 3.37592273 came after the first endpoint measurement and covers image
+builds, failed attempts and five cold starts. The counter moves with use, so no
+snapshot is a bill. `SPEC.md` 13.3 stays open:
 scale-from-zero latency minus container start is unmeasured.
 
 Unproven: free-text quality on unseen tickets, Phase B in the deployed app,
@@ -146,7 +168,8 @@ browser pass was run once before the copy change, not after it.
 
 ## Gates on this tree
 
-`python -m unittest discover -s tests -q` → `Ran 437 tests`, `OK`, exit 0;
+`python -m unittest discover -s tests -q` → `Ran 448 tests`, `OK`, exit 0
+(443 before the health fix; five new route tests in `tests/test_demo.py`);
 `git diff --check` exit 0, no output.
 
 

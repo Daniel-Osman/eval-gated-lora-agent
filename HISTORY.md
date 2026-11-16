@@ -108,6 +108,25 @@ The four items that stood in `NOW.md` before the freeze, and where each went.
 Moved out of `NOW.md` to keep it inside the line budget. `NOW.md` carries the
 current verification line only.
 
+Verified 2026-11-16 (stage-6 deploy record, before the web-layer slice):
+post-deploy first request through the demo's `/run`, `POST /run
+{"scenario":"N-110"}` -> 384 s wall, HTTP 200, REJECTED,
+`matches_required_calls false`, `training_seen false`, UNPROVEN reading "this
+preset is a frozen bench case the adapter never trained on"; then warm, `POST
+/run {"scenario":"N-100"}` -> HTTP 200 in 3 s, APPROVED,
+`matches_required_calls true`; idle cold call, `modal container list --json`
+printed 0 agent containers, then `POST /run {"scenario":"N-100"}` -> 309 s wall,
+291.4 s init, APPROVED (`out/serve-deployed3-cold.json`), where 309 s is the
+idle scale-from-zero measurement and 384 s the post-deploy first request, the
+difference being image pull and container start; scale-down,
+`modal container list --json` after idle -> demo container only, agent
+containers 0; browser, `Run N-104` filled the panel, `out/demo-n104.png`; spend at
+this record, `python -m modal billing summary --for "this month" --json` ->
+metered 17.18067970, billed 0.00. Later reads are not this record's: 17.90068367
+came before the last cold forward call, in the web-layer check after this record,
+and 17.97068375 in the reviewer's read after that call, with its output not
+retained in this repo. The counter moves with use, so no snapshot is a bill.
+
 Verified 2026-11-15 (adjudication slice, before the freeze):
 `python -m unittest discover -s tests -q` exit 0 (`Ran 363 tests`, `OK`, 26 of
 them `tests/test_adjudicate.py`); `git diff --check` exit 0;

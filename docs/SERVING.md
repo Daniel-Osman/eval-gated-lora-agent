@@ -290,7 +290,10 @@ one hop, no HTTP redirect (defect 1 below).
 | Warm, back to back, demo `/run` | same door: N-101, N-103, N-105 | **3 s** (0.931 s in request) · **2 s** (1.32 s) · **3 s** (1.32 s) | — |
 | Warm free text, demo `/run` | `POST /run {"ticket":"Hi, my order ORD-1013 has not arrived. What is going on?"}` | **9 s wall**, **4.432 s** in request, **2 generations**; plan `[{"name":"get_order","args":{"order_id":"ORD-1013"}}]`; reply "Your order ORD-1013 for one Linen throw ($34.99) shows as paid, and its DHL shipment SHP-1013 is marked delivered with tracking number TRK1013." | `out/serve-demo-freetext.json` |
 | Scale-down | `modal container list --json` after ~2 min idle | only the demo app's container; **agent containers: 0** | — |
-| Unknown preset, through `/run` | `POST /run {"scenario":"N-999"}` | **HTTP 400**, detail quoted below | — |
+| Unknown preset, warm cache and warm health | `POST /run {"scenario":"N-999"}` | **HTTP 400 in 0.96 s**; no line added to the agent app log | — |
+| Unknown preset, cold health function | same request after the health function had scaled down | **HTTP 400 in 4.85 s**; no `engine: ready` line added | — |
+| Cold forward, good preset, after the 400s | `POST /run {"scenario":"N-100"}` | **319 s wall**; `engine.init_seconds 301`; **HTTP 200**; **APPROVED**; `matches_required_calls true` | — |
+| Unknown preset, through `/run` (earlier) | `POST /run {"scenario":"N-999"}` | **HTTP 400**, detail quoted below | — |
 | Browser, `Run N-104` | click on the demo page | panel filled: plan, call, gate verdict, reply, timings, versions, UNPROVEN and Phase B blocks | `out/demo-n104.png` |
 
 Warm latency is the request's own `timings.total_seconds` against wall time on
@@ -376,24 +379,44 @@ the gate did. It does not show the model being right.
 Both defects lived between two containers, not inside either: the fresh-context
 review of `serve/` would not have caught either one.
 
-### The flaw still open
+### The refusal at the web layer
 
-**Validation runs inside the model container.** An unknown preset id wakes the
-A10, pays the ~5-minute cold start, and only then answers 400. The page offers
-only known presets, so a visitor cannot reach it; a caller can. The cheap fix is
-to validate `scenario` against the preset list in the demo app, which already
-proxies `/health`, or in a small CPU function. It is named here as the next
-improvement and was not built.
+The demo checks `scenario` before the GPU RPC. It reads the preset ids from the
+agent's model-free `/health`, caches them per container, and refreshes the list
+once on a miss, because the agent may have redeployed with a new preset. An
+unknown id gets **HTTP 400** carrying `serve.app`'s own sentence, held equal by a
+test, and the model function is never invoked. When `/health` cannot be read the
+check fails open and forwards the request: a stale or absent list must not turn a
+good request into a 400, so the agent answers it, or answers 400 itself.
+
+Measured: a bad id with a warm cache and a warm health function answered **400 in
+0.96 s**; a bad id with a **cold health function** answered **400 in 4.85 s**.
+`modal app logs eval-gated-lora-agent` holds one container start and one
+`engine: ready in 301.0s` line, both from the 319 s N-100 forward call in the
+table above; neither 400 added a line, so no model container initialised for
+either.
+The saving is the point: a GPU wake costs about 18 s of container start plus
+291.4 s of engine init.
+
+The earlier behaviour stays in the record. Validation ran inside the model
+container, so an unknown preset id woke the A10 and the caller paid the cold
+start before the same 400. The page offered only known presets, so no visitor
+could reach it; a caller could. That is what the web-layer check fixes.
 
 ### Spend, metered
 
 `python -m modal billing summary --for "this month" --json` printed metered
-**17.18067970**, billed **0.00** (credits). Baselines: `out/serve-billing-before.json`
-**14.36375475**, `out/serve-billing-after.json` **14.78476210**. The first
-endpoint measurement cost **$0.42100735**; the whole deploy and demo verification
-since then is **17.18067970 − 14.78476210 = $2.39591760**. That figure includes
-image builds, failed attempts and four cold starts. It is metered, not estimated,
-and not itemised.
+**18.16068483**, billed **0.00** (credits), read at 21:51 on 2026-11-16 with its
+output not retained here. The same read at the stage-6 record was
+**17.18067970**; the read before the last cold forward call was **17.90068367**,
+and the reviewer's read after that call **17.97068375**, also with no output
+retained. The counter moves with use, so no snapshot is a bill. Baselines: `out/serve-billing-before.json` **14.36375475**,
+`out/serve-billing-after.json` **14.78476210**. The first endpoint measurement
+cost **$0.42100735**; the deploy, demo verification and the web-layer check since
+then are **18.16068483 − 14.78476210 = $3.37592273**, of which
+**$2.39591760** was spent by the stage-6 record and **$0.98000513** after it.
+That figure includes image builds, failed attempts and five cold starts. It is
+metered, not estimated, and not itemised.
 
 ## The decision the numbers force
 

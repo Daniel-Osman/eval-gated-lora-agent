@@ -263,13 +263,21 @@ class RequestContract(unittest.TestCase):
 
 
 class Routes(unittest.TestCase):
+    def preset_health(self, *ids):
+        return FakeResponse(200, {"ok": True, "presets": [{"id": i} for i in ids]})
+
+    def health_gets(self):
+        return [call for call in FakeAsyncClient.behaviour["calls"] if call[0] == "GET"]
+
     def setUp(self):
         FakeAsyncClient.behaviour = {
-            "response": FakeResponse(200, {"ok": True}),
+            "response": self.preset_health("N-100", "N-101", "N-104"),
             "error": None,
             "responses": [],
             "calls": [],
         }
+        demo._PRESET_IDS.clear()
+        self.addCleanup(demo._PRESET_IDS.clear)
         patcher = mock.patch.object(demo.httpx, "AsyncClient", FakeAsyncClient)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -301,11 +309,125 @@ class Routes(unittest.TestCase):
         self.assertEqual(FakeAgent.calls, [{"scenario": "N-104"}])
 
     def test_run_mirrors_the_agent_400_verbatim(self):
+        # Health is unreachable, so the demo fails open and the agent answers:
+        # the visitor sees its refusal character for character.
+        FakeAsyncClient.behaviour["error"] = demo.httpx.ConnectError("nope")
         detail = "unknown scenario; the composed presets are: N-100, N-104"
         FakeAgent.answer = json.dumps({"status_code": 400, "body": {"detail": detail}})
         response = self.client.post("/run", json={"scenario": "N-999"})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"], detail)
+
+    def test_a_bad_scenario_is_a_400_and_the_agent_stays_asleep(self):
+        FakeAsyncClient.behaviour["response"] = self.preset_health("N-100", "N-101")
+        response = self.client.post("/run", json={"scenario": "N-999"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["detail"],
+            "unknown scenario; the composed presets are: N-100, N-101",
+        )
+        self.assertEqual(FakeAgent.calls, [])
+
+    def test_a_known_scenario_is_cached_and_forwarded(self):
+        FakeAgent.answer = json.dumps({"status_code": 200, "body": {"mode": "composed"}})
+        first = self.client.post("/run", json={"scenario": "N-104"})
+        second = self.client.post("/run", json={"scenario": "N-104"})
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+        self.assertEqual(second.json(), {"mode": "composed"})
+        # One read fills the cache; the second request costs no health call.
+        self.assertEqual(len(self.health_gets()), 1)
+        self.assertEqual(FakeAgent.calls, [{"scenario": "N-104"}, {"scenario": "N-104"}])
+
+    def test_a_miss_refreshes_health_once_and_then_succeeds(self):
+        FakeAsyncClient.behaviour["responses"] = [
+            self.preset_health("N-100"),
+            self.preset_health("N-100", "N-105"),
+        ]
+        FakeAgent.answer = json.dumps({"status_code": 200, "body": {"mode": "composed"}})
+        response = self.client.post("/run", json={"scenario": "N-105"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"mode": "composed"})
+        self.assertEqual(len(self.health_gets()), 2)
+        self.assertEqual(FakeAgent.calls, [{"scenario": "N-105"}])
+
+    def test_a_second_miss_does_not_loop(self):
+        FakeAsyncClient.behaviour["response"] = self.preset_health("N-100")
+        self.assertEqual(self.client.post("/run", json={"scenario": "N-999"}).status_code, 400)
+        before = len(self.health_gets())
+        self.assertEqual(self.client.post("/run", json={"scenario": "N-998"}).status_code, 400)
+        self.assertEqual(len(self.health_gets()) - before, 1)
+        self.assertEqual(FakeAgent.calls, [])
+
+    def test_an_unreachable_health_forwards_instead_of_refusing(self):
+        FakeAsyncClient.behaviour["error"] = demo.httpx.ConnectError("nope")
+        FakeAgent.answer = json.dumps({"status_code": 200, "body": {"mode": "composed"}})
+        response = self.client.post("/run", json={"scenario": "N-999"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(FakeAgent.calls), 1)
+
+    def test_a_503_health_cannot_authorise_a_refusal(self):
+        """A 503 can carry a valid-looking body, and that body is not a healthy read.
+
+        The body here lists N-100 only. Trusting it would cache a short list and
+        refuse N-104, which the agent does serve, so the request forwards; it
+        still forwards second time, because nothing was stored.
+        """
+        FakeAsyncClient.behaviour["response"] = FakeResponse(
+            503, {"ok": True, "presets": [{"id": "N-100"}]}
+        )
+        FakeAgent.answer = json.dumps({"status_code": 200, "body": {"mode": "composed"}})
+        self.assertEqual(self.client.post("/run", json={"scenario": "N-104"}).status_code, 200)
+        self.assertEqual(len(FakeAgent.calls), 1)
+        self.assertEqual(demo._PRESET_IDS, {})
+        self.assertEqual(self.client.post("/run", json={"scenario": "N-104"}).status_code, 200)
+        self.assertEqual(len(FakeAgent.calls), 2)
+
+    def test_the_health_route_passes_a_503_through_and_caches_nothing(self):
+        body = {"ok": True, "presets": [{"id": "N-100"}]}
+        FakeAsyncClient.behaviour["response"] = FakeResponse(503, body)
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), body)
+        self.assertEqual(demo._PRESET_IDS, {})
+
+    def test_an_ok_false_health_forwards(self):
+        FakeAsyncClient.behaviour["response"] = FakeResponse(
+            200, {"ok": False, "error": "no bench", "presets": [{"id": "N-100"}]}
+        )
+        FakeAgent.answer = json.dumps({"status_code": 200, "body": {"mode": "composed"}})
+        response = self.client.post("/run", json={"scenario": "N-999"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(FakeAgent.calls, [{"scenario": "N-999"}])
+        self.assertEqual(demo._PRESET_IDS, {})
+
+    def test_a_partial_preset_list_is_treated_as_no_answer(self):
+        """Every element needs a non-empty string id; a short list is not a subset."""
+        for body in (
+            {"ok": True, "presets": [{"id": "N-100"}, {"title": "no id"}]},
+            {"ok": True, "presets": [{"id": ""}]},
+            {"ok": True, "presets": []},
+            {"ok": True},
+        ):
+            with self.subTest(body=body):
+                demo._PRESET_IDS.clear()
+                FakeAsyncClient.behaviour["response"] = FakeResponse(200, body)
+                FakeAgent.calls = []
+                FakeAgent.answer = json.dumps({"status_code": 200, "body": {"mode": "composed"}})
+                response = self.client.post("/run", json={"scenario": "N-999"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(len(FakeAgent.calls), 1)
+                self.assertEqual(demo._PRESET_IDS, {})
+
+    def test_a_healthy_read_refuses_a_bad_id_and_then_serves_without_a_read(self):
+        FakeAsyncClient.behaviour["response"] = self.preset_health("N-100", "N-104")
+        FakeAgent.answer = json.dumps({"status_code": 200, "body": {"mode": "composed"}})
+        refused = self.client.post("/run", json={"scenario": "N-999"})
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(FakeAgent.calls, [])
+        reads = len(self.health_gets())
+        self.assertEqual(self.client.post("/run", json={"scenario": "N-104"}).status_code, 200)
+        self.assertEqual(len(self.health_gets()), reads)
+        self.assertEqual(FakeAgent.calls, [{"scenario": "N-104"}])
 
     def test_run_never_calls_the_agent_for_a_bad_body(self):
         self.assertEqual(self.client.post("/run", content=b"not json").status_code, 400)
@@ -375,6 +497,16 @@ class Routes(unittest.TestCase):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 502)
         self.assertFalse(response.json()["ok"])
+
+
+class Wording(unittest.TestCase):
+    def test_the_refusal_is_the_endpoints_own_sentence(self):
+        """One sentence, two homes: drift would make the page's 400 a third wording."""
+        presets = app_mod.load_presets(REPO / "bench")
+        with self.assertRaises(app_mod.RequestError) as theirs:
+            app_mod.validate_request({"scenario": "N-999"}, presets)
+        self.assertEqual(demo.unknown_scenario_message(presets), str(theirs.exception))
+        self.assertIn("N-100", str(theirs.exception))
 
 
 if __name__ == "__main__":
