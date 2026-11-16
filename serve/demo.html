@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Eval-gated LoRA agent — one request</title>
+<style>
+  :root {
+    --paper: #f7f4ee;
+    --panel: #fffdf8;
+    --ink: #17150f;
+    --ink-soft: #4a463d;
+    --muted: #635e53;
+    --rule: #d9d2c4;
+    --rule-strong: #b3ab99;
+    --accent: #8a4f00;
+    --accent-soft: #f0e3cd;
+    --good: #1c6035;
+    --good-soft: #e2efe4;
+    --bad: #94201c;
+    --bad-soft: #f6e2df;
+    --focus: #1a5fb4;
+    --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+    --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #14120f;
+      --panel: #1b1915;
+      --ink: #efe9de;
+      --ink-soft: #d3ccbf;
+      --muted: #a9a294;
+      --rule: #37322a;
+      --rule-strong: #5b5447;
+      --accent: #e0a44c;
+      --accent-soft: #2c2318;
+      --good: #74d191;
+      --good-soft: #1a2a1f;
+      --bad: #f08d86;
+      --bad-soft: #2e1c1a;
+      --focus: #8ab4f8;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #14120f;
+    --panel: #1b1915;
+    --ink: #efe9de;
+    --ink-soft: #d3ccbf;
+    --muted: #a9a294;
+    --rule: #37322a;
+    --rule-strong: #5b5447;
+    --accent: #e0a44c;
+    --accent-soft: #2c2318;
+    --good: #74d191;
+    --good-soft: #1a2a1f;
+    --bad: #f08d86;
+    --bad-soft: #2e1c1a;
+    --focus: #8ab4f8;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.55;
+    font-variant-numeric: tabular-nums;
+  }
+  a { color: inherit; text-decoration-color: var(--rule-strong); text-underline-offset: 3px; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 72px; }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+    border-bottom: 1px solid var(--rule-strong); padding-bottom: 18px;
+  }
+  .eyebrow {
+    margin: 0 0 10px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  h1 { margin: 0 0 10px; font-size: clamp(26px, 3.4vw, 36px); line-height: 1.12; letter-spacing: -.02em; font-weight: 640; }
+  .dek { margin: 0; max-width: 62ch; color: var(--ink-soft); font-size: 15px; }
+  .theme-btn {
+    flex: none; font: inherit; font-size: 12px; font-family: var(--mono);
+    color: var(--ink-soft); background: transparent; border: 1px solid var(--rule);
+    border-radius: 2px; padding: 6px 10px; cursor: pointer; min-width: 104px;
+  }
+  .theme-btn:hover { border-color: var(--rule-strong); color: var(--ink); }
+
+  /* ---------- measured operating point ---------- */
+  .spec { margin: 26px 0 0; border: 1px solid var(--rule); background: var(--panel); border-radius: 2px; }
+  .spec dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); margin: 0; }
+  .spec .cell { padding: 14px 16px; border-right: 1px solid var(--rule); }
+  .spec .cell:last-child { border-right: 0; }
+  .spec dt {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 4px;
+  }
+  .spec dd { margin: 0; font-family: var(--mono); font-size: 19px; line-height: 1.2; color: var(--ink); }
+  .spec .sub { margin: 5px 0 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
+
+  /* ---------- the wait, said before the first click ---------- */
+  .notice {
+    margin: 22px 0 0; padding: 16px 18px 16px 18px; border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 2px;
+  }
+  .notice p { margin: 0; max-width: 88ch; }
+  .notice-title { font-weight: 640; font-size: 15.5px; margin-bottom: 6px !important; }
+  .notice .body { font-size: 14px; color: var(--ink-soft); }
+  .notice code, .mono { font-family: var(--mono); font-size: .92em; }
+
+  /* ---------- layout ---------- */
+  .grid { display: grid; gap: 26px; margin-top: 30px; }
+  @media (min-width: 980px) { .grid { grid-template-columns: minmax(320px, 372px) minmax(0, 1fr); gap: 40px; } }
+  h2 { margin: 0 0 14px; font-size: 13px; font-family: var(--mono); letter-spacing: .11em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+  h3 { margin: 26px 0 8px; font-size: 11px; font-family: var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  h3:first-child { margin-top: 0; }
+
+  /* ---------- controls ---------- */
+  .controls { min-width: 0; }
+  fieldset.modes { border: 1px solid var(--rule); border-radius: 2px; padding: 4px; margin: 0 0 14px; display: flex; gap: 4px; background: var(--panel); }
+  fieldset.modes legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .modes label { flex: 1; display: block; position: relative; cursor: pointer; }
+  .modes input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .modes span {
+    display: block; text-align: center; padding: 8px 6px; font-size: 13px; color: var(--ink-soft);
+    border-radius: 1px; border: 1px solid transparent;
+  }
+  .modes input:checked + span { background: var(--paper); color: var(--ink); border-color: var(--rule-strong); font-weight: 600; }
+  .modes input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .modes input:disabled + span { opacity: .5; color: var(--muted); cursor: not-allowed; }
+  .hint { margin: 0 0 16px; font-size: 13px; color: var(--muted); }
+  .field-note { margin: 10px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .count { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .count.over { color: var(--bad); font-weight: 600; }
+
+  /* ---------- pinned boundary case ---------- */
+  .pinned { border: 1px solid var(--rule); border-top: 2px solid var(--bad); background: var(--panel); padding: 14px 16px; border-radius: 2px; margin: 0 0 18px; }
+  .pinned .tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--bad); margin: 0 0 6px; }
+  .pinned p { margin: 0 0 8px; font-size: 13.5px; color: var(--ink-soft); line-height: 1.5; }
+  .pinned p:last-of-type { margin-bottom: 12px; }
+
+  /* ---------- presets ---------- */
+  .presets { border: 1px solid var(--rule); border-radius: 2px; background: var(--panel); max-height: 388px; overflow: auto; }
+  .presets .loading, .presets .failed { margin: 0; padding: 14px 14px; font-size: 13px; color: var(--muted); }
+  .presets .failed { color: var(--bad); }
+  .preset {
+    display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: baseline; gap: 10px;
+    width: 100%; text-align: left; font: inherit; color: var(--ink); background: transparent;
+    border: 0; border-bottom: 1px solid var(--rule); padding: 9px 12px; cursor: pointer;
+  }
+  .preset:last-child { border-bottom: 0; }
+  .preset:hover:not(:disabled) { background: var(--accent-soft); }
+  .preset:disabled { cursor: not-allowed; opacity: .55; }
+  .preset .id { font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+  .preset .title { font-size: 13px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .preset .seen { font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .preset .seen.no { color: var(--accent); }
+
+  /* ---------- free text form ---------- */
+  label.field { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  textarea {
+    width: 100%; font: inherit; font-size: 14px; line-height: 1.5; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--rule-strong); border-radius: 2px;
+    padding: 10px 11px; resize: vertical; min-height: 104px;
+  }
+  textarea::placeholder { color: var(--muted); }
+  textarea:disabled { opacity: .6; cursor: not-allowed; }
+  .counter-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 6px 0 14px; }
+  .warn { margin: 0; font-size: 12.5px; color: var(--bad); }
+
+  button.primary, button.ghost {
+    font: inherit; font-size: 13.5px; border-radius: 2px; cursor: pointer; padding: 9px 14px;
+  }
+  button.primary { background: var(--ink); color: var(--paper); border: 1px solid var(--ink); font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--ink-soft); border-color: var(--ink-soft); }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--rule-strong); font-family: var(--mono); font-size: 12px; padding: 6px 10px; }
+  button.ghost:hover:not(:disabled) { background: var(--accent-soft); }
+  button.ghost:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ---------- result column ---------- */
+  .result { min-width: 0; border-top: 1px solid var(--rule-strong); padding-top: 18px; }
+  @media (min-width: 980px) { .result { border-top: 0; border-left: 1px solid var(--rule); padding: 0 0 0 40px; } }
+  .empty { margin: 0; color: var(--muted); font-size: 14px; max-width: 60ch; }
+
+  /* in-flight */
+  .wait { border: 1px solid var(--rule); border-left: 3px solid var(--accent); background: var(--panel); border-radius: 2px; padding: 18px; }
+  .wait-top { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  .clock { font-family: var(--mono); font-size: 34px; line-height: 1; letter-spacing: -.01em; }
+  .clock-label { font-family: var(--mono); font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  .wait-phase { margin: 12px 0 0; font-size: 14px; color: var(--ink-soft); }
+  .queue-note { margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); }
+
+  /* response */
+  .resp-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .pill {
+    display: inline-block; font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; padding: 4px 8px; border: 1px solid; border-radius: 2px; font-weight: 600;
+  }
+  .pill.ok { color: var(--good); background: var(--good-soft); border-color: var(--good); }
+  .pill.no { color: var(--bad); background: var(--bad-soft); border-color: var(--bad); }
+  .pill.mode { color: var(--ink-soft); background: transparent; border-color: var(--rule-strong); font-weight: 500; }
+  .resp-sub { margin: 0 0 2px; font-size: 13.5px; color: var(--ink-soft); }
+  .resp-id { font-family: var(--mono); font-size: 13px; }
+  .rule { border: 0; border-top: 1px solid var(--rule); margin: 22px 0 0; }
+
+  .boundary { margin: 18px 0 0; border: 1px solid var(--bad); border-left: 3px solid var(--bad); background: var(--bad-soft); padding: 13px 15px; border-radius: 2px; }
+  .boundary .tag { margin: 0 0 6px; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--bad); font-weight: 700; }
+  .boundary p { margin: 0 0 8px; font-size: 13.5px; color: var(--ink-soft); }
+  .boundary p:last-child { margin-bottom: 0; }
+  .boundary .said { font-weight: 640; color: var(--ink); }
+  .match-ok { margin: 18px 0 0; font-size: 13px; color: var(--good); font-family: var(--mono); }
+  .match-ok span { color: var(--muted); }
+
+  .quote { margin: 0; padding: 10px 14px; border-left: 2px solid var(--rule-strong); font-size: 14.5px; color: var(--ink); background: var(--panel); }
+  pre.json {
+    margin: 0; padding: 11px 13px; background: var(--panel); border: 1px solid var(--rule);
+    border-radius: 2px; font-family: var(--mono); font-size: 12px; line-height: 1.5;
+    overflow: auto; max-height: 260px; white-space: pre-wrap; word-break: break-word;
+  }
+  .calls { list-style: none; margin: 0; padding: 0; counter-reset: call; }
+  .calls > li { border-top: 1px solid var(--rule); padding: 12px 0 0; margin-top: 12px; }
+  .calls > li:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+  .call-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; }
+  .call-n { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .call-name { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+  .call-out { margin: 8px 0 0; font-size: 12px; font-family: var(--mono); color: var(--muted); }
+
+  .facts { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 2px; overflow: hidden; }
+  .facts > div { background: var(--panel); padding: 10px 12px; }
+  .facts dt { font-family: var(--mono); font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0 0 3px; }
+  .facts dd { margin: 0; font-family: var(--mono); font-size: 15px; }
+  .facts dd small { display: block; font-family: var(--sans); font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+  .notes { margin: 0; padding: 0 0 0 18px; font-size: 12.5px; color: var(--muted); }
+  .notes li { margin-bottom: 5px; }
+  .error { border: 1px solid var(--bad); border-left: 3px solid var(--bad); background: var(--bad-soft); padding: 14px 16px; border-radius: 2px; }
+  .error .tag { margin: 0 0 6px; font-family: var(--mono); font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--bad); font-weight: 700; }
+  .error p { margin: 0 0 8px; font-size: 14px; color: var(--ink); overflow-wrap: anywhere; }
+  .error p:last-child { margin-bottom: 0; color: var(--muted); font-size: 12.5px; }
+  .foot { margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--muted); max-width: 88ch; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">Stage 6 · serving · one request</p>
+      <h1>Eval-gated LoRA agent</h1>
+      <p class="dek">A 27B QLoRA adapter, merged and requantized to 4-bit, on one A10. The model writes a plan; the plan runs against a freshly seeded mock shop; a Phase&nbsp;A gate decides whether the reply may be sent. This page shows every step, including where the gate approves a decision that was wrong.</p>
+    </div>
+    <button class="theme-btn" id="theme" type="button" aria-label="Colour scheme: auto">Auto</button>
+  </header>
+
+  <section class="spec" aria-label="Measured operating point">
+    <dl>
+      <div class="cell">
+        <dt>Cold start</dt><dd>309 s</dd>
+        <p class="sub">291.4 s of it engine init; the rest is not split</p>
+      </div>
+      <div class="cell">
+        <dt>Warm, composed</dt><dd>1.5–2.4 s</dd>
+        <p class="sub">one generation, 30 output tokens</p>
+      </div>
+      <div class="cell">
+        <dt>Warm, free text</dt><dd>~6.3 s</dd>
+        <p class="sub">two generations: plan, then reply</p>
+      </div>
+      <div class="cell">
+        <dt>Concurrency</dt><dd>1 request</dd>
+        <p class="sub">1.08× at 4k tokens; a second visitor queues</p>
+      </div>
+      <div class="cell">
+        <dt>Presets</dt><dd>20</dd>
+        <p class="sub">frozen composed cases, 14 training-seen</p>
+      </div>
+    </dl>
+  </section>
+
+  <div class="notice" role="note" aria-labelledby="wait-title">
+    <p class="notice-title" id="wait-title">Before the first click: the first request after idle waits about 5 minutes while the model loads.</p>
+    <p class="body">The container scales to zero after 60 s idle and keeps nothing warm. Cold start is measured at <strong>309 s</strong> end to end through this page's path, of which <strong>291.4 s</strong> is engine init reported by the container (<span class="mono">engine.init_seconds</span>). The split between container start and engine init is <strong>not measured</strong>. Once warm, a composed request takes 1.5–2.4 s and free text about 6.3 s. The counter below counts real seconds; it does not know which step is running.</p>
+  </div>
+
+  <main class="grid">
+    <section class="controls" aria-labelledby="controls-h">
+      <h2 id="controls-h">Run a request</h2>
+
+      <fieldset class="modes">
+        <legend>Input mode</legend>
+        <label>
+          <input type="radio" name="mode" value="composed" checked>
+          <span>Composed preset</span>
+        </label>
+        <label>
+          <input type="radio" name="mode" value="free">
+          <span>Free text</span>
+        </label>
+      </fieldset>
+
+      <p class="hint" id="mode-hint">A frozen bench case: the model writes one JSON plan, the tools run it, and the gate checks the composed reply against the resulting state.</p>
+
+      <div id="panel-composed">
+        <aside class="pinned" aria-labelledby="pinned-h">
+          <p class="tag" id="pinned-h">The boundary, measured</p>
+          <p><strong>N-104</strong> · “Please refund ORD-1023 in full; the parcel never arrived.” The model refunded <strong>$21.00</strong> of $25.99. <code>matches_required_calls: false</code> — <span class="mono">plan mismatch: refund amount 2100 != 2599</span> — and the gate approved the reply anyway, because “We refunded $21.00 for ORD-1023.” is true against the store.</p>
+          <p>Phase A checks that the sentence is true against state, not that the decision was right.</p>
+          <button class="ghost" type="button" data-scenario="N-104">Run N-104</button>
+        </aside>
+
+        <h3 id="presets-h">Presets from /health</h3>
+        <div class="presets" id="presets" aria-labelledby="presets-h" aria-busy="true">
+          <p class="loading">Loading the 20 presets…</p>
+        </div>
+        <p class="field-note"><span class="mono">seen</span> means the case was in the training split. <span class="mono">unseen</span> means it is in the frozen bench but not in training — a match there is still a compatibility check, not a generalisation claim.</p>
+      </div>
+
+      <form id="panel-free" hidden novalidate>
+        <p class="field-note" id="free-note">Quality on unseen tickets is unmeasured. The gate checks truth, not wisdom: it checks the reply against the recorded state changes and the claim shapes it recognises. It does not read free prose in general, and it does not judge whether the action was the right one to take.</p>
+        <label class="field" for="ticket" style="margin-top:14px">Your ticket</label>
+        <textarea id="ticket" name="ticket" rows="5" aria-describedby="ticket-count ticket-warn free-cap" placeholder="Order ORD-1010 arrived with a cracked shade. Please refund $88.00."></textarea>
+        <div class="counter-row">
+          <span class="count" id="ticket-count">0 / 1200 characters</span>
+          <p class="warn" id="ticket-warn" hidden>Over the cap: the endpoint returns 400.</p>
+        </div>
+        <button class="primary" type="submit" id="free-submit">Send ticket</button>
+        <p class="field-note" id="free-cap">The endpoint caps a ticket at 1200 characters, allows at most 6 tool calls, and runs two generations — so free text is the slower path. Every request gets a fresh seeded store; the ticket is not remembered.</p>
+      </form>
+    </section>
+
+    <section class="result" aria-labelledby="result-h">
+      <h2 id="result-h" tabindex="-1">Response</h2>
+      <div id="out">
+        <p class="empty">Nothing run yet. Pick a preset on the left. The panel fills with the ticket, the plan, every tool call and its result, the gate's verdict and codes, the reply, and the timings — including how long the engine took to load.</p>
+      </div>
+      <div class="sr-only" id="announcer" aria-live="polite" role="status"></div>
+    </section>
+  </main>
+
+  <p class="foot">One A10, one request at a time. Presets come from the frozen bench (<span class="mono">bench/cases/normal-ext.jsonl</span>); the reply is composed from a fresh in-memory mock shop that is discarded with the request. Phase&nbsp;B — the judge that would ask whether the decision was wise — is off: its key does not go into a remote sandbox.</p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var MAX_TICKET_CHARS = 1200;
+  /* One measured number: 309 s end to end through this page's path. The engine
+     init part (291.4 s) is reported by the container; the rest is not split, so
+     the counter shows elapsed time and nothing else. */
+  var COLD_MEASURED_S = 309;
+
+  var state = { presets: [], busy: false, mode: "composed" };
+  var out = document.getElementById("out");
+  var announcer = document.getElementById("announcer");
+  var presetsBox = document.getElementById("presets");
+  var freeForm = document.getElementById("panel-free");
+  var composedPanel = document.getElementById("panel-composed");
+  var hint = document.getElementById("mode-hint");
+  var ticketEl = document.getElementById("ticket");
+  var ticketCount = document.getElementById("ticket-count");
+  var ticketWarn = document.getElementById("ticket-warn");
+  var resultHeading = document.getElementById("result-h");
+  var inflight = null;
+
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function json(value) {
+    try { return esc(JSON.stringify(value, null, 2)); }
+    catch (err) { return esc(String(value)); }
+  }
+
+  function seconds(value) {
+    var n = Number(value);
+    return isFinite(n) ? n.toFixed(n >= 100 ? 1 : 3) + " s" : "—";
+  }
+
+  function clockText(ms) {
+    var total = Math.max(0, Math.floor(ms / 1000));
+    var m = Math.floor(total / 60);
+    var s = total % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  /* ---------- theme ---------- */
+  var themes = ["auto", "light", "dark"];
+  var themeBtn = document.getElementById("theme");
+  var themeIndex = 0;
+  themeBtn.addEventListener("click", function () {
+    themeIndex = (themeIndex + 1) % themes.length;
+    var value = themes[themeIndex];
+    if (value === "auto") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.setAttribute("data-theme", value);
+    }
+    themeBtn.textContent = value.charAt(0).toUpperCase() + value.slice(1);
+    themeBtn.setAttribute("aria-label", "Colour scheme: " + value);
+  });
+
+  /* ---------- mode ---------- */
+  var radios = document.querySelectorAll('input[name="mode"]');
+  for (var i = 0; i < radios.length; i++) {
+    radios[i].addEventListener("change", function () {
+      state.mode = this.value;
+      var composed = state.mode === "composed";
+      composedPanel.hidden = !composed;
+      freeForm.hidden = composed;
+      hint.textContent = composed
+        ? "A frozen bench case: the model writes one JSON plan, the tools run it, and the gate checks the composed reply against the resulting state."
+        : "Any ticket you type. The model writes the plan and then the reply, and the gate checks the reply against the recorded state changes. Whether the action was wise is not measured.";
+      if (composed) { setPresetsDisabled(state.busy); } else { syncFreeButton(); }
+    });
+  }
+
+  function setPresetsDisabled(disabled) {
+    var buttons = presetsBox.querySelectorAll("button");
+    for (var j = 0; j < buttons.length; j++) { buttons[j].disabled = disabled; }
+  }
+
+  /* ---------- presets ---------- */
+  function renderPresets(presets) {
+    state.presets = presets;
+    presetsBox.setAttribute("aria-busy", "false");
+    presetsBox.innerHTML = "";
+    presets.forEach(function (preset) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "preset";
+      button.setAttribute("data-scenario", preset.id);
+      button.innerHTML =
+        '<span class="id">' + esc(preset.id) + '</span>' +
+        '<span class="title">' + esc(preset.title || "") + '</span>' +
+        '<span class="seen' + (preset.training_seen ? '' : ' no') + '">' +
+          (preset.training_seen ? "seen" : "unseen") + '</span>';
+      button.title = preset.ticket || "";
+      button.addEventListener("click", function () { run({ scenario: preset.id }); });
+      presetsBox.appendChild(button);
+    });
+    /* Presets can arrive while a request is in flight; they must land disabled. */
+    setPresetsDisabled(state.busy);
+    announcer.textContent = presets.length + " presets loaded.";
+  }
+
+  function presetsFailed(message) {
+    presetsBox.setAttribute("aria-busy", "false");
+    presetsBox.innerHTML = "";
+    var p = document.createElement("p");
+    p.className = "failed";
+    p.textContent = "Presets did not load: " + message + " ";
+    var retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "ghost";
+    retry.textContent = "Retry";
+    retry.style.marginLeft = "8px";
+    /* A health failure can land mid-request; the wait panel promises every
+       control is disabled, so the retry button follows the busy flag. */
+    retry.disabled = state.busy;
+    retry.addEventListener("click", loadPresets);
+    p.appendChild(retry);
+    presetsBox.appendChild(p);
+  }
+
+  function loadPresets() {
+    presetsBox.setAttribute("aria-busy", "true");
+    presetsBox.innerHTML = '<p class="loading">Loading the presets…</p>';
+    fetch("/health", { headers: { "accept": "application/json" } })
+      .then(function (response) {
+        return response.json().then(function (body) {
+          if (!response.ok) { throw new Error(body.detail || ("HTTP " + response.status)); }
+          return body;
+        });
+      })
+      .then(function (body) {
+        if (!body || !body.ok || !Array.isArray(body.presets)) {
+          throw new Error((body && body.error) || "health returned no presets");
+        }
+        renderPresets(body.presets);
+      })
+      .catch(function (err) { presetsFailed(err.message || String(err)); });
+  }
+
+  /* ---------- free text ---------- */
+  function freeTicketOk() {
+    var value = ticketEl.value.trim();
+    return value.length > 0 && ticketEl.value.length <= MAX_TICKET_CHARS;
+  }
+  function syncFreeButton() {
+    var submit = document.getElementById("free-submit");
+    submit.disabled = state.busy || !freeTicketOk();
+    submit.textContent = state.busy ? "Waiting for the model…" : "Send ticket";
+  }
+  /* The wait panel says every control is disabled. The buttons are handled by
+     their own paths; the textarea and the mode radios are disabled here, so the
+     form cannot be edited underneath a request in flight. */
+  function setFormDisabled(disabled) {
+    ticketEl.disabled = disabled;
+    for (var f = 0; f < radios.length; f++) { radios[f].disabled = disabled; }
+    syncFreeButton();
+  }
+  function syncCounter() {
+    var n = ticketEl.value.length;
+    ticketCount.textContent = n + " / " + MAX_TICKET_CHARS + " characters";
+    var over = n > MAX_TICKET_CHARS;
+    ticketCount.classList.toggle("over", over);
+    ticketWarn.hidden = !over;
+    syncFreeButton();
+  }
+  ticketEl.addEventListener("input", syncCounter);
+
+  freeForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var value = ticketEl.value.trim();
+    if (!freeTicketOk()) { return; }
+    run({ ticket: value });
+  });
+
+  /* ---------- the wait ---------- */
+  function beginWait() {
+    var started = performance.now();
+    out.innerHTML =
+      '<div class="wait">' +
+        '<div class="wait-top">' +
+          '<span class="clock" id="clock">0:00</span>' +
+          '<span class="clock-label">elapsed · measured cold start ' + COLD_MEASURED_S + ' s</span>' +
+        '</div>' +
+        '<p class="wait-phase" id="phase">Sending the request. If the container is asleep, this includes its measured ' + COLD_MEASURED_S + ' s cold start — 291.4 s of it engine init. The counter counts real seconds; it does not know which step is running.</p>' +
+        '<p class="queue-note">Every control is disabled until this answers. The A10 serves one request at a time (1.08× concurrency at 4k tokens), so a second click would queue behind this one and take twice as long.</p>' +
+      '</div>';
+    var clock = document.getElementById("clock");
+    inflight = window.setInterval(function () {
+      clock.textContent = clockText(performance.now() - started);
+    }, 120);
+    return started;
+  }
+
+  function endWait() {
+    if (inflight !== null) { window.clearInterval(inflight); inflight = null; }
+  }
+
+  /* ---------- response rendering ---------- */
+  function verdictPill(verdict) {
+    var approved = verdict && verdict.verdict === "APPROVED";
+    return '<span class="pill ' + (approved ? "ok" : "no") + '">' +
+      esc((verdict && verdict.verdict) || "no verdict") + '</span>';
+  }
+
+  function boundaryBlock(data) {
+    var scenario = data.scenario;
+    if (!scenario) { return ""; }
+    var approved = data.verdict && data.verdict.verdict === "APPROVED";
+    if (scenario.matches_required_calls === true) {
+      return '<p class="match-ok">matches_required_calls: true <span>— ' +
+        esc(scenario.match_reason || "action matches required_calls") + '</span></p>';
+    }
+    var tag = approved ? "Wrong decision — approved by the gate" : "Wrong decision — the gate rejected it as well";
+    var explained = approved
+      ? '<p><span class="said">Phase A checks that the sentence is true against state, not that the decision was right.</span></p>'
+      : "";
+    return '<div class="boundary">' +
+      '<p class="tag">' + esc(tag) + '</p>' +
+      '<p><span class="mono">matches_required_calls: false</span> — ' + esc(scenario.match_reason || "the plan does not match the case's required calls") + '</p>' +
+      explained +
+      '</div>';
+  }
+
+  function callsBlock(calls) {
+    if (!Array.isArray(calls) || calls.length === 0) {
+      return '<p class="field-note">The model answered without calling a tool. That is a decision, not an error: a status question with nothing to change needs no write.</p>';
+    }
+    var items = calls.map(function (call, index) {
+      var result = call.result || {};
+      var ok = result.ok === true;
+      var code = result.code || (ok ? "ok" : "refused");
+      return '<li>' +
+        '<p class="call-head">' +
+          '<span class="call-n">' + (index + 1) + '.</span>' +
+          '<span class="call-name">' + esc(call.tool || call.name || "tool") + '</span>' +
+          '<span class="pill ' + (ok ? "ok" : "no") + '">' + esc(code) + '</span>' +
+        '</p>' +
+        '<pre class="json">' + json(call.args || {}) + '</pre>' +
+        '<p class="call-out">result</p>' +
+        '<pre class="json">' + json(result.data !== undefined ? result.data : result) + '</pre>' +
+        '</li>';
+    });
+    return '<ol class="calls">' + items.join("") + '</ol>';
+  }
+
+  function timingFacts(data) {
+    var t = data.timings || {};
+    var cells = [];
+    cells.push(['Total in request', seconds(t.total_seconds), "server clock"]);
+    if (t.plan_seconds !== undefined) { cells.push(['Plan generation', seconds(t.plan_seconds), (t.output_tokens && t.output_tokens.plan ? t.output_tokens.plan : "—") + " tokens"]); }
+    if (t.action_seconds !== undefined) { cells.push(['Tools', seconds(t.action_seconds), "composed path"]); }
+    if (t.tools_seconds !== undefined) { cells.push(['Tools', seconds(t.tools_seconds), "free-text path"]); }
+    if (t.reply_seconds !== undefined) { cells.push(['Reply generation', seconds(t.reply_seconds), (t.output_tokens && t.output_tokens.reply ? t.output_tokens.reply : "—") + " tokens"]); }
+    if (t.gate_seconds !== undefined) { cells.push(['Gate', seconds(t.gate_seconds), "Phase A"]); }
+    if (t.prompt_tokens !== undefined) { cells.push(['Prompt', String(t.prompt_tokens) + " tok", t.generations + (t.generations === 1 ? " generation" : " generations")]); }
+    return '<dl class="facts">' + cells.map(function (cell) {
+      return '<div><dt>' + esc(cell[0]) + '</dt><dd>' + esc(cell[1]) +
+        (cell[2] ? '<small>' + esc(cell[2]) + '</small>' : '') + '</dd></div>';
+    }).join("") + '</dl>';
+  }
+
+  function engineFacts(data) {
+    var engine = data.engine || {};
+    var versions = engine.versions || {};
+    var cells = [];
+    cells.push(['Engine init', engine.init_seconds !== undefined && engine.init_seconds !== null ? engine.init_seconds + " s" : "—", "this container, once"]);
+    cells.push(['Container uptime', engine.container_uptime_seconds !== undefined ? engine.container_uptime_seconds + " s" : "—", engine.request_number !== undefined ? "request #" + engine.request_number : ""]);
+    cells.push(['Context', (engine.max_model_len || 4096) + " tok", "max_num_seqs " + (engine.max_num_seqs || 8)]);
+    if (versions.vllm) { cells.push(['Stack', "vLLM " + versions.vllm, "torch " + versions.torch + " · transformers " + versions.transformers]); }
+    return '<dl class="facts">' + cells.map(function (cell) {
+      return '<div><dt>' + esc(cell[0]) + '</dt><dd>' + esc(cell[1]) +
+        (cell[2] ? '<small>' + esc(cell[2]) + '</small>' : '') + '</dd></div>';
+    }).join("") + '</dl>';
+  }
+
+  function render(data, wallSeconds) {
+    var scenario = data.scenario;
+    var t = data.timings || {};
+    var verdict = data.verdict || {};
+    var mode = data.mode === "composed" ? "composed preset" : "free text";
+    var head = '<div class="resp-head">' + verdictPill(verdict) +
+      '<span class="pill mode">' + esc(mode) + '</span>' +
+      (scenario ? '<span class="resp-id">' + esc(scenario.id) + '</span>' : '') +
+      '</div>' +
+      (scenario ? '<p class="resp-sub">' + esc(scenario.title || "") + '</p>' : '') +
+      '<p class="resp-sub">' + esc(data.store || "") + '</p>';
+
+    var body = "";
+    if (scenario) {
+      body += '<h3>Ticket</h3><blockquote class="quote">' + esc(scenario.ticket || "") + '</blockquote>';
+      body += boundaryBlock(data);
+    } else if (data.ticket) {
+      body += '<h3>Ticket</h3><blockquote class="quote">' + esc(data.ticket) + '</blockquote>';
+    }
+
+    body += '<h3>Plan</h3><pre class="json">' + json(data.plan) + '</pre>';
+    body += '<h3>Tool calls and results</h3>' + callsBlock(data.calls);
+    body += '<h3>Gate verdict</h3><pre class="json">' + json({
+      verdict: verdict.verdict,
+      codes: verdict.codes || [],
+      reasons: verdict.reasons || [],
+      phase: verdict.phase,
+      reply_committed: verdict.reply_committed
+    }) + '</pre>';
+    body += '<h3>Reply</h3><blockquote class="quote">' + (data.reply ? esc(data.reply) : '<span class="mono">empty</span>') + '</blockquote>';
+
+    body += '<h3>Time</h3><div class="resp-sub" style="margin-bottom:10px">' +
+      'This page measured <strong class="mono">' + wallSeconds + ' s</strong> from click to answer. ' +
+      'The server counted <strong class="mono">' + seconds(t.total_seconds) + '</strong> inside the request. ' +
+      'The difference is Modal scheduling and the engine load, not the model work.' +
+      '</div>' + timingFacts(data) + engineFacts(data);
+
+    var unc = Array.isArray(data.unproven) ? data.unproven : [];
+    if (unc.length) {
+      body += '<h3>Unproven</h3><ul class="notes">' + unc.map(function (line) {
+        return '<li>' + esc(line) + '</li>';
+      }).join("") + '</ul>';
+    }
+    if (data.phase_b) {
+      body += '<h3>Phase B</h3><p class="field-note" style="margin-top:0">' +
+        (data.phase_b.enabled ? "On." : "Off — ") + esc(data.phase_b.reason || "") + '</p>';
+    }
+    if (data.provenance) {
+      body += '<p class="field-note">' + esc(data.provenance) + '</p>';
+    }
+
+    out.innerHTML = head + '<hr class="rule">' + body;
+  }
+
+  function errorBlock(status, detail, hintText) {
+    out.innerHTML = '<div class="error">' +
+      '<p class="tag">HTTP ' + esc(status) + '</p>' +
+      '<p>' + esc(detail) + '</p>' +
+      '<p>' + esc(hintText) + '</p>' +
+      '</div>';
+  }
+
+  /* ---------- one request ---------- */
+  function run(payload) {
+    if (state.busy) { return; }
+    state.busy = true;
+    state.mode = payload.scenario ? "composed" : "free";
+    setPresetsDisabled(true);
+    setFormDisabled(true);
+    var ghostButtons = document.querySelectorAll("button.ghost");
+    for (var g = 0; g < ghostButtons.length; g++) { ghostButtons[g].disabled = true; }
+    themeBtn.disabled = true;
+    var started = beginWait();
+    announcer.textContent = "Request sent. Waiting for the model.";
+
+    fetch("/run", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (response) {
+      return response.text().then(function (text) {
+        var body = null;
+        try { body = text ? JSON.parse(text) : null; } catch (err) { body = null; }
+        return { status: response.status, ok: response.ok, body: body, text: text };
+      });
+    }).then(function (result) {
+      endWait();
+      var wall = ((performance.now() - started) / 1000).toFixed(2);
+      if (result.ok && result.body && result.body.verdict) {
+        render(result.body, wall);
+        announcer.textContent = "Answer received: " + (result.body.verdict.verdict || "verdict") + " in " + wall + " seconds.";
+      } else if (result.ok && result.body) {
+        render(result.body, wall);
+        announcer.textContent = "Answer received in " + wall + " seconds.";
+      } else {
+        var detail = (result.body && (result.body.detail || result.body.error)) || result.text || "no body";
+        if (typeof detail !== "string") { detail = JSON.stringify(detail); }
+        errorBlock(result.status, detail, result.status === 400
+          ? "That is the endpoint's own message, passed through unchanged."
+          : "The page sent the request and did not get a result. Retry — if the model was loading, a warm container now answers in seconds.");
+        announcer.textContent = "Request failed with HTTP " + result.status + ".";
+      }
+    }).catch(function (err) {
+      endWait();
+      errorBlock("network", (err && err.message) || String(err),
+        "The browser could not reach the page's own /run route. The request may have been lost; retry.");
+      announcer.textContent = "Request failed before an answer arrived.";
+    }).then(function () {
+      state.busy = false;
+      setPresetsDisabled(false);
+      setFormDisabled(false);
+      var ghosts = document.querySelectorAll("button.ghost");
+      for (var k = 0; k < ghosts.length; k++) { ghosts[k].disabled = false; }
+      themeBtn.disabled = false;
+      resultHeading.focus();
+    });
+  }
+
+  /* the pinned N-104 button */
+  var pinned = document.querySelectorAll('button[data-scenario="N-104"]');
+  for (var p = 0; p < pinned.length; p++) {
+    pinned[p].addEventListener("click", function () { run({ scenario: "N-104" }); });
+  }
+
+  syncCounter();
+  loadPresets();
+}());
+</script>
+</body>
+</html>

@@ -165,6 +165,20 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result["code"], "unknown_tool")
         self.assertEqual(rows(self.conn, "SELECT * FROM audit_log")[-1]["tool"], "delete_everything")
 
+    def test_invalid_arguments_stays_opaque_and_audited(self) -> None:
+        before = scalar(self.conn, "SELECT COUNT(*) FROM audit_log")
+        result = self.tk.call("get_order", order_id="ORD-1001", unexpected=True)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "invalid_arguments")
+        message = result["data"]["message"]
+        self.assertEqual(message, "the tool was called with arguments it does not accept")
+        for leak in ("ToolKit", "_tool_", "unexpected keyword argument", "self"):
+            self.assertNotIn(leak, message)
+        self.assertEqual(scalar(self.conn, "SELECT COUNT(*) FROM audit_log"), before + 1)
+        last = rows(self.conn, "SELECT * FROM audit_log")[-1]
+        self.assertEqual(last["tool"], "get_order")
+        self.assertEqual(last["ok"], 0)
+
     def test_billing_log_records_api_calls(self) -> None:
         self.tk.call("refund_order", order_id="ORD-1001", amount_cents=2400)
         log = rows(self.conn, "SELECT * FROM billing_log")

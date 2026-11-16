@@ -37,7 +37,7 @@ against state, and rejects or escalates what state contradicts.
 ## Where it stands
 
 **Frozen 2026-11-15.** Training stops here: no third iteration, no further corpus
-growth. Stage 6, serving, is next.
+growth. Stage 6, serving, is live and measured.
 
 | Stage | State |
 |---|---|
@@ -46,7 +46,21 @@ growth. Stage 6, serving, is next.
 | 3. Train | Done. One adapter, `full-20261114T201900Z`, on the Modal Volume. |
 | 4. Measure | Verified, and **no fresh-context PASS is recorded** for this milestone or any before it, so by this project's rule it is unaccepted. Both students on all 284 cases; Phase B on every Phase A approval; the claims adjudicated. Daniel closed training here on 2026-11-15: an owner's decision, not a verdict. |
 | 5. Iterate | **Further runs not run by decision.** The corpus is the constraint. The adjudication slice ran, is verified, and records no fresh-context PASS. |
-| 6. Serve | Next. Modal vLLM on an A10 24 GB, scale to zero, plus a browser demo. |
+| 6. Serve | **Live and measured 2026-11-16.** One A10 at `max_num_seqs 8`, scale to zero, plus a browser demo. 309 s cold start through the demo, 2-3 s warm, a 400 carried through, N-104 shown in the browser. Verified, and no fresh-context PASS is recorded, so unaccepted like every stage before it. |
+
+Stage 6 answers at two URLs: the agent at
+`https://daniel-osman--eval-gated-lora-agent-agent-run.us-east.modal.run` with its
+preset list at
+`https://daniel-osman--eval-gated-lora-agent-health.us-east.modal.run`, and the
+browser demo at
+`https://daniel-osman--eval-gated-lora-agent-demo-web.us-east.modal.run`. The
+first call after idle pays **309 s** through the demo, **291.4 s** of it engine
+init on a GPU that had **0** containers a moment before; warm calls answer in
+**2-3 s**, one request at a time. **The demo shows the gate, not model quality:**
+it offers 20 frozen composed presets, 14 seen in training and 6 not, so a match on
+an unseen preset is still a serving-compatibility result, not a generalisation
+claim. Phase B is off there because the judge's key does not go into a remote
+sandbox.
 
 The adapter, in full: `full-20261114T201900Z` — Qwen3.8-27B, 4-bit QLoRA, 263
 written rows from 178 teacher traces, 40 % composed per epoch, 186 steps, loss
@@ -183,7 +197,9 @@ in this repo says so in its row.
 | Phase B over the base artifact (stage 4) | `python -m shopagent.cli judge-bench --rows out/bench-base-284.jsonl --student base` | 101 judge calls, 0 invalid, 0 unavailable, 0 not scored; A+B **56 approved / 186 rejected / 39 escalated**; 61.4 s; `out/judged-base.jsonl` + manifest |
 | Phase B over the adapter artifact (stage 4) | `python -m shopagent.cli judge-bench --rows out/bench-adapter-284.jsonl --student adapter` | 233 judge calls, 0 invalid, 0 unavailable, 0 not scored; A+B **226 / 38 / 18**; 116.6 s; `out/judged-adapter.jsonl` + manifest |
 | Adjudicated false approvals (stage 5) | `python -m shopagent.cli adjudicate --concurrency 8` | 334 rows adjudicated over 335 HTTP attempts (base 102, adapter 233), **0 invalid, 0 unavailable**; base 101 approved rows → adversarial 36: **2 unsupported** / 15 supported / 19 incomplete, honest 65: 5 / 38 / 22; adapter 233 → adversarial 118: **0** / 116 / 2, honest 115: 4 / 105 / 6; 152.7 s, time only; `out/adjudicated-{base,adapter}.jsonl` + `out/adjudicated.manifest.json` |
-| Test suite | `python -m unittest discover -s tests -q` | `Ran 363 tests` · `OK`, exit 0 |
+| Cold start, deployed demo (stage 6) | `modal container list --json` → 0 agent containers, then `POST https://daniel-osman--eval-gated-lora-agent-demo-web.us-east.modal.run/run {"scenario":"N-100"}` | **309 s wall**; `engine.init_seconds 291.4`; `request_number 1`; 0.94 s in request; `APPROVED`, `matches_required_calls true`; `out/serve-deployed3-cold.json` |
+| Warm latency, deployed demo (stage 6) | same `/run` door, N-101, N-103, N-105 back to back | **3 s** (0.931 s in request) · **2 s** (1.32 s) · **3 s** (1.32 s) |
+| Test suite | `python -m unittest discover -s tests -q` | `Ran 437 tests` · `OK`, exit 0 |
 | Benchmark frozen | `python -m shopagent.cli verify-frozen` | `benchmark frozen: OK`, exit 0 |
 | Leak check over the corpus | `python -m shopagent.cli leakcheck --corpus data/train` | `178 sessions`, 284 cases, 92 holdout replies, four match lists empty, closest pair 0.75, `leak check: CLEAN`, exit 0 |
 
@@ -226,11 +242,15 @@ against. They are remediation-targeted and say nothing about unseen wording. The
 12/32 row is the only observation that does, and it is one this tree cannot re-run.
 
 **The spend is not in the table because no command prints it.** Eleven Modal run
-estimates total `$5.4430`; the metered figure for the month is `$11.10346860`,
-billed `$0.00`, read from the Modal dashboard. Estimates cover compute only and
-exclude adapter save and Volume commit, so the metered number is the larger one.
-Teacher, judge and adjudicator calls ride the OpenCode Go subscription with no
-metered per-token line item.
+estimates total `$5.4430`. The stage-6 deploy is metered, not estimated: build,
+failed attempts, four cold starts and every demo call since the first endpoint
+measurement cost **`$2.39591760`** (`17.18067970` this month minus `14.78476210`
+recorded after that first measurement, which itself cost `$0.42100735`). The
+metered figure for the month is **`17.18067970`**, billed **`$0.00`**, read from
+the Modal dashboard. Estimates cover compute only and exclude adapter save and
+Volume commit, so the metered number is the larger one. Teacher, judge and
+adjudicator calls ride the OpenCode Go subscription with no metered per-token line
+item.
 
 ## The success criteria, one verdict each
 
@@ -261,9 +281,11 @@ metered per-token line item.
    their numbers: 12/32 has no command here and no retained artifact, both
    `modal run …` lines are `Unverified:` in the stage-4 record, and the metered
    figure is a dashboard read.
-6. **The full cycle fits inside $30 — met to the freeze.** `$5.4430` estimated,
-   `$11.10346860` metered, `$0.00` billed. Stage 6 has not run, so its spend is
-   not in the figure: this is the cycle so far, not a finished cycle.
+6. **The full cycle fits inside $30 — met so far.** `$5.4430` estimated, plus
+   `$2.39591760` metered for the stage-6 deploy and demo verification, against
+   `$17.18067970` metered for the month and `$0.00` billed. Stage 6 has now run,
+   so the cycle figure is the largest it has been; it is still inside $30, and it
+   is the cycle so far, not a finished cycle.
 
 ## What is proven
 

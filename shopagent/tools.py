@@ -162,8 +162,13 @@ class ToolKit:
         else:
             try:
                 result = handler(**args)
-            except TypeError as exc:
-                result = _envelope(name, False, "invalid_arguments", {"message": str(exc)})
+            except TypeError:
+                # `str(exc)` here would read "ToolKit._tool_get_order() got an
+                # unexpected keyword argument 'unexpected'" into a page a stranger
+                # sees. The envelope stays a result; the detail stays out of it.
+                result = _envelope(
+                    name, False, "invalid_arguments", {"message": "the tool was called with arguments it does not accept"}
+                )
         audit(
             self.conn,
             actor=self.actor,

@@ -2,11 +2,153 @@
 
 2026-11-15 · author's record · tree not committed
 
-**Status: frozen 2026-11-15.** Training stopped on adapter
+**Status: frozen 2026-11-15, served 2026-11-16.** Training stopped on adapter
 `full-20261114T201900Z`; stages 1–4 are done, stage 5's iteration runs were not
-attempted, stage 6 is next. The sections run newest first. The close — what is
-proven, caveated, unmeasured and deliberately not done — is
+attempted, stage 6 deployed an endpoint and a demo. The sections run newest first.
+The close — what is proven, caveated, unmeasured and deliberately not done — is
 [Where this stands](#where-this-stands-2026-11-15) at the end of this file.
+
+# Stage 6 — the endpoint and the demo (2026-11-16)
+
+Author's record, written before the fresh-context review. **Measured, not
+accepted**; the verdict is outstanding and the author cannot run it.
+
+Two Modal apps are live in `us-east`, deployed from `serve/app.py` and
+`serve/demo.py`. The agent app holds the quantized artifact on one A10:
+`max_model_len 4096`, `max_num_seqs 8`, `gpu_memory_utilization 0.92`,
+`min_containers=0`, `max_containers=1`, `scaledown_window=60`. Phase B is off in
+the payload — the judge's key does not go into a remote sandbox — so the live app
+answers with Phase A and the gate. Modal refuses `retries` on a Web Function
+(`InvalidError: Web Functions do not support retries`), so the HTTP door is
+single-shot; the code also runs one `evaluate` per request and never retries a
+mutating action, because a retried refund would refund twice.
+
+| App | Door |
+|---|---|
+| `eval-gated-lora-agent` | `POST https://daniel-osman--eval-gated-lora-agent-agent-run.us-east.modal.run` — the model |
+| | `GET https://daniel-osman--eval-gated-lora-agent-health.us-east.modal.run` — presets, model-free |
+| `eval-gated-lora-agent-demo` | `https://daniel-osman--eval-gated-lora-agent-demo-web.us-east.modal.run` — page, `/health`, `/run` |
+
+The demo app is CPU-only (`fastapi` + `httpx`). It serves `serve/demo.html`,
+proxies the agent's health endpoint, and calls `Agent.serve` over the Modal SDK.
+
+## The measurements
+
+| What | Call | Result | Artifact |
+|---|---|---|---|
+| Cold start, demo path | `modal container list --json` → **0** agent containers; then `POST /run {"scenario":"N-100"}` | **309 s wall**; `engine.init_seconds 291.4`; `request_number 1`; `timings.total_seconds 0.94`; `APPROVED`; `matches_required_calls true` | `out/serve-deployed3-cold.json` |
+| Cold start, HTTP door (earlier) | `POST /agent-run {"scenario":"N-100"}` | **312.73 s** | `out/cold.json` |
+| Unseen preset N-110, post-deploy first request | `POST /run {"scenario":"N-110"}` through the demo URL | **200, REJECTED**, `matches_required_calls false`, labelled never-trained-on; **384 s wall**; `training_seen false`; `unproven` "this preset is a frozen bench case the adapter never trained on; a match is a serving-compatibility result, not generalisation" | — |
+| Warm, back to back | `/run` N-101, N-103, N-105 | **3 s** (0.931 s in request) · **2 s** (1.32 s) · **3 s** (1.32 s) | — |
+| Warm free text | `POST /run` with ticket "Hi, my order ORD-1013 has not arrived. What is going on?" | **9 s wall**, **4.432 s** in request, **2 generations**; plan `[{"name":"get_order","args":{"order_id":"ORD-1013"}}]`; reply "Your order ORD-1013 for one Linen throw ($34.99) shows as paid, and its DHL shipment SHP-1013 is marked delivered with tracking number TRK1013." | `out/serve-demo-freetext.json` |
+| Scale-down | `modal container list --json` after ~2 min idle | only the demo app's container; **agent containers: 0** | — |
+| Unknown preset through `/run` | `POST /run {"scenario":"N-999"}` | **HTTP 400**, detail verbatim below | — |
+| Browser | click **Run N-104** | panel filled end to end | `out/demo-n104.png` |
+
+**Scale-down, the sequence worth quoting:** `modal container list --json` printed
+**0** agent containers before the cold call, **1** GPU container during it, and
+**0** again after roughly two minutes idle. Scale-to-zero works here, and it is
+why the next caller pays 291 s of engine init.
+
+**Two cold figures, different scopes:** 309 s is the idle scale-from-zero
+measurement; 384 s is the post-deploy first request, and the difference is image
+pull and container start.
+
+**The 400 through the proxy**, verbatim and with HTTP status 400:
+
+```
+{"detail":"unknown scenario; the composed presets are: N-100, N-101, N-102, N-103, N-104, N-105, N-106, N-107, N-108, N-109, N-110, N-81, N-82, N-83, N-86, N-88, N-89, N-97, N-98, N-99"}
+```
+
+**The browser frame** is N-104, the validation row. It filled every panel:
+`APPROVED`; `matches_required_calls: false — plan mismatch: refund amount 2100 !=
+2599`; the "WRONG DECISION — APPROVED BY THE GATE" block with its one-sentence
+explanation; the plan; the `refund_order` call with `REF-1014` and
+`remaining_cents 499`; the gate verdict JSON; the reply "We refunded $21.00 for
+ORD-1023."; timings (1.31 s in request, engine init 290.5 s, request #3); the
+stack (vLLM 0.33.0, torch 2.14.0+cu130, transformers 5.20.2); the UNPROVEN line;
+and the Phase B off block. A wrong refund drawn as a wrong decision is the demo
+working, not the model working.
+
+## Two defects, both fixed
+
+1. **A 303 on the wire is not escapable.** A cold or queued POST to the web
+   function answers `303` to the same URL plus `__modal_attempt_token`. A normal
+   redirect follower turns 303 into GET and drops the body; a re-POST and a GET
+   were both refused with `400 modal-http: bad redirect method`. The hop went
+   instead: the demo calls `Agent.serve` through the SDK, which queues without a
+   redirect.
+2. **A dict return cannot cross into a torch-free image.** `Agent.serve` returned a
+   dict, and the demo image has no torch, so unpickling failed in the success
+   path: `modal.exception.DeserializationError: Deserialization failed because the
+   'torch' module is not available in the local environment`
+   (`_utils/function_utils.py:577`). `serve` now returns JSON text and the demo
+   parses it; a test asserts a non-JSON value raises out of `serve` instead of
+   being coerced.
+
+## The flaw left open
+
+Validation runs inside the model container, so an unknown preset id wakes the A10
+and pays a ~5-minute cold start before it can answer 400. The page offers only
+known presets, so a visitor cannot hit it; a caller can. The cheap fix is to
+validate `scenario` against the preset list in the demo app (which already proxies
+`/health`) or in a small CPU function. Named as the next improvement, not built.
+
+## Spend
+
+`python -m modal billing summary --for "this month" --json` printed metered
+**17.18067970**, billed **0.00** (credits). `out/serve-billing-before.json`
+**14.36375475** and `out/serve-billing-after.json` **14.78476210** are the
+baselines; the first endpoint measurement cost **$0.42100735**, and the deploy and
+demo verification since then is **17.18067970 − 14.78476210 = $2.39591760**,
+which includes image builds, failed attempts and four cold starts. Metered, not
+estimated, and not itemised.
+
+## Not proven
+
+- **No unseen-ticket quality.** The demo offers 20 frozen bench presets, 14 seen in
+  training and 6 not; a match on an unseen preset is a serving-compatibility
+  result, not generalisation. One warm free-text call returned a correct-looking
+  reply on a seen scenario. `SPEC.md` §7's held-out set still has no student run.
+- **Scale-from-zero end-to-end latency excluding container start.** The 309 s wall
+  holds 291.4 s of engine init; container start, image pull and scheduling are the
+  remaining ~18 s and nothing here splits them. `SPEC.md` §13.3 stays open.
+- **No Phase B in the deployed app.** The live demo shows Phase A and the gate.
+  The judge runs are offline, in `out/judged-*.jsonl` and `out/adjudicated-*.jsonl`.
+- **One request at a time.** `max_num_seqs 8` with a 4,096-token window is a
+  single-user demo; vLLM reported 1.08x concurrency at 4k in the fit measurement,
+  so two long requests cannot be in flight together. Load behaviour is unmeasured.
+- **The browser frame is one case.** N-104 is the validation row, not a sample.
+- **Not accepted.** The fresh-context verdict is outstanding; Helm spawns
+  `helm/shipwright-reviewer` for the PASS that counts. Nothing committed.
+
+## Verdict
+
+Proven: both endpoints answer, the container scales to zero and back (0 agent
+containers, a 309 s cold request with request_number 1, then 0 again), the
+demo's run path returns the gate's verdict and the composed reply, an unknown
+preset returns the endpoint's own 400 text and a malformed body is refused with a
+400 before the hop, and no key or secret reaches either served image.
+
+Measured but not itemised: 17.18067970 metered this month, 0.00 billed, of
+which 2.39591760 came after the first endpoint measurement and covers image
+builds, failed attempts and four cold starts. `SPEC.md` 13.3 stays open:
+scale-from-zero latency minus container start is unmeasured.
+
+Unproven: free-text quality on unseen tickets, Phase B in the deployed app,
+concurrency above one request, end-to-end latency excluding container start.
+
+Holdout: no automated holdout gates this slice. The stage-6 review found five
+defects (a 500 on a malformed body, two unsupported page claims, missing cap
+pins, an enabled input in flight, a tool error leaking internals) and one
+evidence gap; all six were fixed, and the gates below were re-run after them. The
+browser pass was run once before the copy change, not after it.
+
+## Gates on this tree
+
+`python -m unittest discover -s tests -q` → `Ran 437 tests`, `OK`, exit 0;
+`git diff --check` exit 0, no output.
+
 
 # Stage 5 — the adjudicated false-approval metric (2026-11-15)
 

@@ -1,7 +1,9 @@
 # SERVING — stage 6 slice 1: is the locked A10 target reachable?
 
-Status: measurement only, 2026-11-15. No deploy, no endpoint, no demo, no commit.
-Run order, code and cost bounds: `serve/feasibility.py`. Raw logs: `out/serve-*.log`.
+Status: slice 1 measured 2026-11-15; the endpoint and the demo deployed 2026-11-16
+(`## Deployed endpoint and demo`, below the measurement record). No commit.
+Run order, code and cost bounds: `serve/feasibility.py`, `serve/app.py`, `serve/demo.py`.
+Raw logs: `out/serve-*.log`.
 
 `SPEC.md` §2 locks serving to **Modal vLLM on an A10 24 GB, scale to zero**. The
 trained artifact (`runs/full-20261114T201900Z/adapter`) is a bitsandbytes 4-bit
@@ -256,7 +258,148 @@ $0.09/GiB/month with 1 TiB included, so this is inside the free allowance. The
 merged bf16 checkpoint is the reusable half: a second quantizer would not need to
 re-merge.
 
+## Deployed endpoint and demo (2026-11-16)
+
+Both apps are live on Modal in `us-east`, deployed from `serve/app.py` and
+`serve/demo.py`. The locked target is unchanged: one A10, `max_model_len 4096`,
+`max_num_seqs 8`, `gpu_memory_utilization 0.92`, `min_containers=0`,
+`max_containers=1`, `scaledown_window=60`. Phase B is off in the payload because
+the DeepSeek judge sits behind the subscription key, and that key does not go into
+a remote sandbox; the deployed agent answers with Phase A and the gate. Modal
+refuses `retries` on a Web Function (`InvalidError: Web Functions do not support
+retries`), so the HTTP door is single-shot by construction. The code also runs
+one `evaluate` per request and never wraps a mutating action in a retry loop — a
+retried refund would refund twice.
+
+| App | Door |
+|---|---|
+| `eval-gated-lora-agent` | `POST https://daniel-osman--eval-gated-lora-agent-agent-run.us-east.modal.run` — the model |
+| | `GET https://daniel-osman--eval-gated-lora-agent-health.us-east.modal.run` — presets, model-free |
+| `eval-gated-lora-agent-demo` | `https://daniel-osman--eval-gated-lora-agent-demo-web.us-east.modal.run` — page, `/health`, `/run` |
+
+The demo app is CPU-only (`fastapi` + `httpx`). It serves `serve/demo.html`,
+proxies the agent's health endpoint, and calls `Agent.serve` over the Modal SDK —
+one hop, no HTTP redirect (defect 1 below).
+
+### Measured on this deployment
+
+| What | Call | Result | Saved |
+|---|---|---|---|
+| Cold start, demo path, no agent container | `modal container list --json` → **0** agent containers, then `POST /run {"scenario":"N-100"}` | **309 s wall**; `engine.init_seconds 291.4`; `engine.request_number 1`; `timings.total_seconds 0.94`; verdict `APPROVED`; `matches_required_calls true` | `out/serve-deployed3-cold.json` |
+| Cold start, HTTP door (earlier) | `POST /agent-run {"scenario":"N-100"}` | **312.73 s** | `out/cold.json` |
+| Warm, back to back, demo `/run` | same door: N-101, N-103, N-105 | **3 s** (0.931 s in request) · **2 s** (1.32 s) · **3 s** (1.32 s) | — |
+| Warm free text, demo `/run` | `POST /run {"ticket":"Hi, my order ORD-1013 has not arrived. What is going on?"}` | **9 s wall**, **4.432 s** in request, **2 generations**; plan `[{"name":"get_order","args":{"order_id":"ORD-1013"}}]`; reply "Your order ORD-1013 for one Linen throw ($34.99) shows as paid, and its DHL shipment SHP-1013 is marked delivered with tracking number TRK1013." | `out/serve-demo-freetext.json` |
+| Scale-down | `modal container list --json` after ~2 min idle | only the demo app's container; **agent containers: 0** | — |
+| Unknown preset, through `/run` | `POST /run {"scenario":"N-999"}` | **HTTP 400**, detail quoted below | — |
+| Browser, `Run N-104` | click on the demo page | panel filled: plan, call, gate verdict, reply, timings, versions, UNPROVEN and Phase B blocks | `out/demo-n104.png` |
+
+Warm latency is the request's own `timings.total_seconds` against wall time on
+the same call; the wall figure includes the demo hop.
+
+### Post-deploy first request, then warm
+
+`modal deploy serve/app.py` finished at 20:1x on 2026-11-16. The first request
+after it, through the demo's `/run`:
+
+| What | Call | Result |
+|---|---|---|
+| Post-deploy first request, unseen preset | `POST /run {"scenario":"N-110"}` | **384 s wall**, **HTTP 200**; verdict **REJECTED**; `matches_required_calls false`; `training_seen false`; `unproven` = "this preset is a frozen bench case the adapter never trained on; a match is a serving-compatibility result, not generalisation" |
+| Then warm, seen preset | `POST /run {"scenario":"N-100"}` | **HTTP 200** in **3 s**; **APPROVED**; `matches_required_calls true`; `training_seen true`; `unproven[0]` = "presets are frozen training-seen bench scenarios; reproducing them is a compatibility check, not a quality claim" |
+
+Two cold figures, and they measure different things: **309 s** is the idle
+scale-from-zero measurement (0 agent containers, 291.4 s of engine init), and
+**384 s** is the post-deploy first request. The difference is image pull and
+container start: the deploy was fresh, so its image was not on the host yet.
+
+What that shows, in one sentence: the six unseen presets are labelled as unseen in
+the response, and at least one of them (N-110) is rejected by the gate — the demo
+does not only show passes.
+
+### Scale-down, the sequence to quote
+
+`modal container list --json` printed **0** agent containers before the cold
+call, **1** GPU container while it ran, and **0** again after roughly two minutes
+idle. Scale-to-zero is therefore real on this deployment, and it is what the next
+caller pays 291 s of engine init for.
+
+### The 400, in the caller's words
+
+```
+{"detail":"unknown scenario; the composed presets are: N-100, N-101, N-102, N-103, N-104, N-105, N-106, N-107, N-108, N-109, N-110, N-81, N-82, N-83, N-86, N-88, N-89, N-97, N-98, N-99"}
+```
+
+Status **400**. The text is the endpoint's own wording, carried through the demo
+unchanged: `serve` returns a status and a body as JSON text, and `/run` mirrors
+them. That the status survives at all is the visible half of the RPC door; the
+invisible half is the cold POST that no longer dies in a redirect.
+
+### The browser
+
+`Run N-104` — the validation row, the one composed case not in the training
+split — fills the whole panel:
+
+| Panel part | Value |
+|---|---|
+| Verdict | `APPROVED` |
+| Match | `matches_required_calls: false — plan mismatch: refund amount 2100 != 2599` |
+| Boundary block | "WRONG DECISION — APPROVED BY THE GATE", with the one-sentence explanation |
+| Plan | the composed plan the model wrote |
+| Call | `refund_order`, `REF-1014`, `remaining_cents 499` |
+| Gate | the verdict JSON |
+| Reply | "We refunded $21.00 for ORD-1023." |
+| Timings | 1.31 s in request; engine init 290.5 s; request #3 |
+| Stack | vLLM 0.33.0, torch 2.14.0+cu130, transformers 5.20.2 |
+| Honesty | the UNPROVEN line and the Phase B off block |
+
+This is the demo's best frame and its most honest one: a refund of 2100 cents
+where 2599 was required, approved because Phase A's rules found nothing to
+contradict, and drawn as a wrong decision rather than hidden. The page shows what
+the gate did. It does not show the model being right.
+
+### Two defects, both fixed, both the interesting part
+
+1. **A 303 on the wire is not escapable.** A cold or queued POST to the web
+   function answers `303` to the same URL plus a `__modal_attempt_token`. A
+   normal redirect follower turns 303 into GET and drops the body; a re-POST and
+   a GET were both refused with `400 modal-http: bad redirect method`. The hop
+   was removed rather than chased: the demo calls `Agent.serve` through the SDK,
+   and the SDK queues without a redirect. `serve/demo.py` carries no
+   `post_following_303`, no `MAX_REDIRECT_HOPS`, no `AGENT_URL`.
+2. **A dict return value cannot cross into a torch-free image.** The first
+   `Agent.serve` returned a dict. The demo image holds no torch, so unpickling
+   the result failed in the **success** path: `modal.exception.DeserializationError:
+   Deserialization failed because the 'torch' module is not available in the
+   local environment` (raised from `_utils/function_utils.py:577`). The fix
+   returns JSON text from `serve` and parses it in the demo, and a test asserts a
+   non-JSON value raises out of `serve` instead of being coerced.
+
+Both defects lived between two containers, not inside either: the fresh-context
+review of `serve/` would not have caught either one.
+
+### The flaw still open
+
+**Validation runs inside the model container.** An unknown preset id wakes the
+A10, pays the ~5-minute cold start, and only then answers 400. The page offers
+only known presets, so a visitor cannot reach it; a caller can. The cheap fix is
+to validate `scenario` against the preset list in the demo app, which already
+proxies `/health`, or in a small CPU function. It is named here as the next
+improvement and was not built.
+
+### Spend, metered
+
+`python -m modal billing summary --for "this month" --json` printed metered
+**17.18067970**, billed **0.00** (credits). Baselines: `out/serve-billing-before.json`
+**14.36375475**, `out/serve-billing-after.json` **14.78476210**. The first
+endpoint measurement cost **$0.42100735**; the whole deploy and demo verification
+since then is **17.18067970 − 14.78476210 = $2.39591760**. That figure includes
+image builds, failed attempts and four cold starts. It is metered, not estimated,
+and not itemised.
+
 ## The decision the numbers force
+
+The option taken on 2026-11-16 is the first one: the A10 stays, and the deployed
+app is a single-user demo at `max_num_seqs 8`. The section above is that
+decision, running.
 
 **The locked A10 target is reachable — at one request at a time — and that is a
 product decision, not an engineering one.**
@@ -280,4 +423,5 @@ The one thing the numbers forbid is leaving this open: `SPEC.md` §2 says A10 wi
 no qualification, and an A10 at `max_num_seqs 8` serves one 4k request at a time,
 which is not what "serve" usually means. Either the spec says "single-user demo,
 `max_num_seqs 8`", or the serving line changes GPU. That is an infrastructure
-change and it is Daniel's call, so this slice names it and stops.
+change and it is Daniel's call, so slice 1 named it and stopped; the deployed
+section above is the first option, running.
