@@ -1,8 +1,10 @@
 # SERVING — stage 6 slice 1: is the locked A10 target reachable?
 
-Status: slice 1 measured 2026-11-15; the endpoint and the demo deployed 2026-11-16
-(`## Deployed endpoint and demo`, below the measurement record). No commit.
-Run order, code and cost bounds: `serve/feasibility.py`, `serve/app.py`, `serve/demo.py`.
+Status: slice 1 measured 2026-11-15; the endpoint and the demo deployed 2026-11-16,
+and the artifact published to a private Hub repo 2026-11-16 (`## Deployed endpoint
+and demo` and `## Published artifact`, below the measurement record). No commit.
+Run order, code and cost bounds: `serve/feasibility.py`, `serve/app.py`,
+`serve/demo.py`, `serve/export_hf.py`.
 Raw logs: `out/serve-*.log`.
 
 `SPEC.md` §2 locks serving to **Modal vLLM on an A10 24 GB, scale to zero**. The
@@ -417,6 +419,56 @@ then are **18.16068483 − 14.78476210 = $3.37592273**, of which
 **$2.39591760** was spent by the stage-6 record and **$0.98000513** after it.
 That figure includes image builds, failed attempts and five cold starts. It is
 metered, not estimated, and not itemised.
+
+## Published artifact (2026-11-16)
+
+`serve/export_hf.py` publishes the served artifact to Hugging Face. It is one
+CPU-only Modal app: the 17.3 GiB never crosses this laptop, the Volume is mounted
+**read-only** so an upload cannot change what the endpoint loads, and the token
+arrives as `HF_TOKEN` from one Modal secret. Three functions, one job each:
+`probe` names the account and the directories and uploads nothing, `export`
+creates the repo private, uploads and writes the model card, `verify` reads the
+repo back with the same token. Transfers use `hf_xet`.
+
+| What | Value |
+|---|---|
+| Account, resolved by the token | **`Daneil960`** — user, not pro, no orgs |
+| Repo | **`Daneil960/eval-gated-qwen3.8-27b`** |
+| Private | **`True`**, and required: a non-private run is refused before `create_repo`, and the repo is re-read after creation, aborting before the first artifact upload if the flag is not private |
+| Head commit | `417d1ff192989b5fa431397db79b95c2a3fad5cd` |
+| Files, bytes | **16**, **19,075,486,047** |
+| `model.safetensors` | **18,568,390,152** — the 8 quantized files sit at the root |
+| `adapter/adapter_model.safetensors` | **467,062,560** — 6 adapter files sit under `adapter/` |
+| `README.md` | **5,637** — the model card, a constant in the script |
+| `.gitattributes` | written by the Hub; the 15 source files plus this one make 16 |
+
+The card states Apache-2.0, base `unsloth/Qwen3.8-27B-unsloth-bnb-4bit`, run
+`full-20261114T201900Z`, and the project's own measured/not-measured split: 14 of
+14 composed schema on seen cases; 0 of 118 against 2 of 36 unsupported claims,
+honest control 4 of 115.
+
+Five checks closed it, all from reading the repo back:
+
+```
+python -m modal run serve/export_hf.py --verify-only Daneil960/eval-gated-qwen3.8-27b
+```
+
+1. `private` is `True`.
+2. `list_repo_files` agrees with `model_info` on **16** files.
+3. Both large files match their source sizes exactly: 18,568,390,152 and
+   467,062,560 bytes.
+4. All **15** source files are present in the repo.
+5. An anonymous read is refused with **HTTP 401**.
+
+Metered cost: **18.17068511** before the export, **18.68353523** after, so the
+delta is **0.51285012** and the billed figure is **0.00**. That is a counter
+difference, not a bill.
+
+The rule this leaves: **the Hub token lives only in the Modal secret
+`scenesift-hf`, as `HF_TOKEN`.** The script reads it from the environment, sends
+it with the client, and never prints, returns or writes it; `probe` lists
+environment key names only. No token belongs in this repo, in a shell profile, or
+in a document.
 
 ## The decision the numbers force
 

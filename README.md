@@ -69,7 +69,11 @@ N-100 after those 400s was **319 s wall**, **301 s** engine init. **The demo sho
 the gate, not model quality:** it offers 20 frozen composed presets, 14 seen in
 training and 6 not, so a match on an unseen preset is still a
 serving-compatibility result, not a generalisation claim. Phase B is off there
-because the judge's key does not go into a remote sandbox.
+because the judge's key does not go into a remote sandbox. The served 4-bit
+artifact and the adapter are also published to the private Hub repo
+`Daneil960/eval-gated-qwen3.8-27b` by `python -m modal run serve/export_hf.py`,
+16 files and 19,075,486,047 bytes, verified private with an anonymous read
+refused.
 
 The adapter, in full: `full-20261114T201900Z` — Qwen3.8-27B, 4-bit QLoRA, 263
 written rows from 178 teacher traces, 40 % composed per epoch, 186 steps, loss

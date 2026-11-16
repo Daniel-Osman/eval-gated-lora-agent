@@ -47,6 +47,7 @@ proxies the agent's health endpoint, and calls `Agent.serve` over the Modal SDK.
 | Unknown preset, cold health function | same call after health scaled down | **HTTP 400 in 4.85 s**; no `engine: ready` line added | — |
 | Cold forward, good preset | `POST /run {"scenario":"N-100"}` after the 400s | **319 s wall**; `engine.init_seconds 301`; **200**, **APPROVED**, `matches_required_calls true` | — |
 | Browser | click **Run N-104** | panel filled end to end | `out/demo-n104.png` |
+| Private Hub publication | `python -m modal run serve/export_hf.py --verify-only Daneil960/eval-gated-qwen3.8-27b`, after the upload | **`Daneil960/eval-gated-qwen3.8-27b`**, `private True`, head `417d1ff`; **16 files, 19,075,486,047 bytes**, both weight sizes exact; **anonymous read refused with HTTP 401**; metered delta **0.51285012** | `serve/export_hf.py` |
 
 **Scale-down, the sequence worth quoting:** `modal container list --json` printed
 **0** agent containers before the cold call, **1** GPU container during it, and
@@ -150,6 +151,10 @@ preset returns the endpoint's own 400 text without invoking the model (0.96 s
 warm, 4.85 s with a cold health function, no engine line in the app log), a
 malformed body is refused with a 400 before the hop, and no key or secret
 reaches either served image.
+
+Published: `Daneil960/eval-gated-qwen3.8-27b` holds the served artifact and the
+adapter, 16 files and 19,075,486,047 bytes, `private True`, and an anonymous read
+of it is refused with **HTTP 401**.
 
 Measured but not itemised: 18.16068483 metered this month, 0.00 billed, of
 which 3.37592273 came after the first endpoint measurement and covers image

@@ -101,3 +101,72 @@ Closed previously: stage 6 slice 4, the RPC door. Landed as commit `6073ba7`;
       -> 400 with no GPU engine line in `modal app logs eval-gated-lora-agent`.
 - [ ] `git diff --check`, `git status --short`, `(Get-Content NOW.md).Count`.
 - No commit. No model deploy.
+
+Section 4's deploy and demo boxes were run and recorded on 2026-11-16 in
+`NOW.md` (400 in 0.96 s warm and 4.85 s cold, 200 in 319 s for N-100, 448
+tests). They are not re-run here; this turn's one in-flight task is section 5.
+
+## 5. Publish the served artifact and the adapter to a private HF repo
+
+Owner approval, 2026-11-16: private repo only, HF account read from the Modal
+secret `scenesift-hf`, nothing public, no commit. Plan reviewed by
+`helm/plan-reviewer` before code: REVISE with six findings. The fail-closed
+privacy rule, the ledger-before-code rule, explicit `token=` on every authenticated
+client, a read-back that asserts rather than prints, the deprecated `hf_transfer`
+backend, and the card's limits were all folded in.
+
+- [x] `serve/export_hf.py`, one new file, one app
+      `eval-gated-lora-agent-export`, CPU only, `retries=0`, Volume mounted
+      read-only at `/vol`, `secrets=[from_name("scenesift-hf")]`:
+      `probe()` (whoami, account type, orgs, `sorted(os.environ)` key names only,
+      both directories listed), `export()` (fail closed unless private, create,
+      upload root and `adapter/`, write the model card, return ids and sizes),
+      `verify()` (`model_info`, `list_repo_files`, per-file sizes, anonymous
+      denial, asserts the two weight sizes), `main()`.
+- [x] Privacy is enforced, not configured: the function refuses
+      `private is not True` before `create_repo`, and re-reads the repo after
+      creation, aborting before the first artifact upload if it is not private.
+- Acceptance: a repo the owner cannot make public by accident; probe names only,
+      never a value; the token never printed, returned or written; the verified
+      total equals 18,568,390,152 + 467,062,560 bytes plus the small files; an
+      anonymous read is refused.
+- Verify: `$env:PYTHONIOENCODING='utf-8'; python -m modal run
+      serve/export_hf.py --probe-only`, then `python -m modal run
+      serve/export_hf.py`, then `python -m modal run serve/export_hf.py
+      --verify-only <repo_id>`; plus `python -m unittest discover -s tests -q`,
+      `git diff --check`, `git status --short`, and `python -m modal billing
+      summary --for "this month" --json` before and after.
+- Files: `serve/export_hf.py`, this ledger, `NOW.md`.
+- Closed, upload: `Daneil960/eval-gated-qwen3.8-27b`, `private True`, 16 files,
+      `total bytes 19,075,486,047` = 18,588,402,779 + 487,076,061 + 5,637 card
+      + 1,570 `.gitattributes`; commits `42b45b5` (quantized), `a54a3dd`
+      (adapter), `417d1ff192989b5fa431397db79b95c2a3fad5cd` (card and head).
+- Closed, verify: `python -m modal run serve/export_hf.py --verify-only
+      Daneil960/eval-gated-qwen3.8-27b` -> `ok private is True`;
+      `ok list_repo_files agrees with model_info on 16 files`;
+      `ok model.safetensors is 18,568,390,152 bytes`;
+      `ok adapter/adapter_model.safetensors is 467,062,560 bytes`;
+      `ok every one of the 15 source files is in the repo`;
+      `ok anonymous read refused with HTTP 401`.
+- Closed, probe: account `Daneil960`, type `user`, orgs `none`, `HF_TOKEN`
+      present in the key list, both `*_dir_present` true.
+- Closed, gates: `Ran 448 tests`, `OK`. Spend before the export **18.17068511**,
+      after **18.68353523**, delta **0.51285012** metered, 0.00 billed. No commit.
+- [x] Record the publication, docs only: `docs/SERVING.md` "Published artifact"
+      after the deployed-endpoint record (what, where, the private flag, the file and
+      byte summary, the verify command and its five checks, the metered delta, the
+      secret-only token rule); `EVIDENCE.md` one measurements row and one Verdict
+      line; `README.md` one stage-6 sentence; `NOW.md` the verify command and result;
+      this ledger.
+- Acceptance: every figure in the record is one of the closed readings above, and
+      the record claims no quality the artifact does not have.
+- Verify: `python -m unittest discover -s tests -q`, `git diff --check`,
+      `git status --short`, `(Get-Content NOW.md).Count`.
+- Files: `docs/SERVING.md`, `EVIDENCE.md`, `README.md`, `NOW.md`, this ledger.
+- Closed, record gates: `python -m unittest discover -s tests -q` ->
+      `Ran 448 tests in 14.242s`, `OK`, exit 0; `git diff --check` exit 0, no
+      output; `NOW.md` 100 lines. No code, no deploy, no upload, no commit.
+- Not done, so not ticked: section 4's deploy and live-demo boxes, and any commit.
+- Two brief shapes did not survive the client: `secret=` is `secrets=[...]`, and
+      `--probe-only true` is `--probe-only` / `--no-probe-only`. `hf_transfer` is
+      deprecated upstream, so the image pins `huggingface_hub[hf_xet]==2.4.0`.
