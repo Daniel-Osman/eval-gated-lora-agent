@@ -39,6 +39,8 @@ working, not a hidden failure.
 **The teacher corpus.** 178 admitted traces of the 284 cases, each admitted only
 after its plan, state, facts and gate verdict checked out, with a leak check over
 the result. Artifact: `data/manifest.json` and three shards under `data/train/`.
+Both are gitignored and local-only, so not in this repo. A public reader checks
+the frozen benchmark under `bench/`, `EVIDENCE.md` and `README.md` instead.
 
 **The adapter.** One training run, `full-20261114T201900Z`: Qwen3.8-27B, 4-bit
 QLoRA, 263 written rows from the 178 traces, 186 steps, loss 0.2051 to 0.0840.
