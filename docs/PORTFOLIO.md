@@ -89,6 +89,10 @@ Two URLs, both live on Modal in `us-east`:
 page. `https://daniel-osman--eval-gated-lora-agent-health.us-east.modal.run` is
 the agent's model-free preset list; the page reads it to fill its presets.
 
+Those two URLs are the public artifacts: the served weights and the adapter
+live in a private Hub repo, `Daneil960/eval-gated-qwen3.8-27b`, available on
+request.
+
 A visitor sees a single page with a mode switch, the 20 frozen composed presets
 pulled from `/health`, a ticket box, and a result panel. A run fills that panel
 with the plan, the tool call, the gate verdict, the reply, the timings, the

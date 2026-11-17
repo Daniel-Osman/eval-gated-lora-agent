@@ -73,7 +73,8 @@ because the judge's key does not go into a remote sandbox. The served 4-bit
 artifact and the adapter are also published to the private Hub repo
 `Daneil960/eval-gated-qwen3.8-27b` by `python -m modal run serve/export_hf.py`,
 16 files and 19,075,487,300 bytes, verified private with an anonymous read
-refused; the card alone was re-uploaded on 2026-11-17.
+refused; the card alone was re-uploaded on 2026-11-17. That Hub repo is
+**private**: its weights are not open, and are available on request.
 
 The adapter, in full: `full-20261114T201900Z` — Qwen3.8-27B, 4-bit QLoRA, 263
 written rows from 178 teacher traces, 40 % composed per epoch, 186 steps, loss
