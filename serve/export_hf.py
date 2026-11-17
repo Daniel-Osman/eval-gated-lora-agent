@@ -9,9 +9,10 @@ Three functions, one job each:
               Uploads nothing.
     export()  create the repo private, fail closed if it is not, upload, write the
               model card, return the file listing and the commit ids.
-    verify()  read the repo back with the same token: the private flag, every file
-              with its size, an anonymous refusal, and the two weight sizes checked
-              against the bytes the Volume holds.
+    verify()  read the repo back with the same token: the private flag, every source
+              file matched by name and size, an anonymous refusal from a fixed
+              allow-list of status codes, and the two weight sizes checked against
+              the bytes the Volume holds.
 
     python -m modal run serve/export_hf.py --probe-only true
     python -m modal run serve/export_hf.py --private true
@@ -35,6 +36,10 @@ ADAPTER_DIR = f"{VOLUME_MOUNT}/runs/full-20261114T201900Z/adapter"
 SECRET_NAME = "scenesift-hf"
 REPO_NAME = "eval-gated-qwen3.8-27b"
 
+# The Hub's base URL for the one unauthenticated read `verify` makes. The tests
+# point it at a loopback server, so the redirect rule is proved on a real chain.
+HUB_BASE = "https://huggingface.co"
+
 # The two files whose sizes the record fixed. `verify` fails if the Hub reports
 # anything else, so a truncated upload cannot pass as success.
 QUANT_WEIGHTS_BYTES = 18_568_390_152
@@ -42,6 +47,17 @@ ADAPTER_WEIGHTS_BYTES = 467_062_560
 
 # Both names are accepted by huggingface_hub; the second is its legacy alias.
 TOKEN_VARS = ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN")
+
+# An anonymous read is only a refusal on one of these. Any other status is a
+# finding, so a 503, a 200 login page or an unfollowed 3xx cannot pass for privacy.
+REFUSAL_CODES = frozenset({401, 403, 404})
+
+# Files the Hub writes itself. `.gitattributes` appears on a repo nobody uploaded
+# it to: `docs/SERVING.md` "Published artifact" records it as written by the Hub,
+# which is what made 15 source files into 16. Any other unexplained name fails.
+HUB_WRITTEN = {
+    ".gitattributes": "written by the Hub for LFS/Xet tracking; no source path creates it",
+}
 
 MODEL_CARD = '''---
 license: apache-2.0
@@ -128,18 +144,37 @@ vllm serve <account>/eval-gated-qwen3.8-27b \\
 ```
 
 The adapter, on the base it was trained against. This is the adapter path, not the served
-W4A16 path; the two are not bit-identical.
+W4A16 path; the two are not bit-identical. It loads `Qwen3_5ForConditionalGeneration`, the
+architecture named in the checkpoint's own config, because the convenient text-only
+class silently drops this adapter.
 
 ```python
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer, Qwen3_5ForConditionalGeneration
 
 BASE = "unsloth/Qwen3.8-27B-unsloth-bnb-4bit"  # a bitsandbytes 4-bit base
 REPO = "<account>/eval-gated-qwen3.8-27b"
 
-model = AutoModelForCausalLM.from_pretrained(BASE, device_map="auto")
+# The architecture in the checkpoint's own config. `AutoModelForCausalLM` names the
+# text tower `model.layers.*` while the adapter is keyed
+# `model.language_model.layers.*`, so PEFT matches no key, keeps its fresh
+# initialisation and raises nothing.
+model = Qwen3_5ForConditionalGeneration.from_pretrained(BASE, device_map="auto")
 model = PeftModel.from_pretrained(model, REPO, subfolder="adapter")
 tokenizer = AutoTokenizer.from_pretrained(REPO, subfolder="adapter")
+
+# Paste this check too. That failure is silent: PEFT initialises `lora_B` to zero,
+# so an adapter that matched no key loads as a zero delta and still reports
+# 116,727,808 attached parameters. One sampled target module catches it.
+assert model.peft_config, "adapter did not attach: model.peft_config is empty"
+sample = next(m for name, m in model.named_modules() if name.endswith(".self_attn.q_proj"))
+params = dict(sample.named_parameters())
+lora_a = next(t for name, t in params.items() if name.startswith("lora_A."))
+lora_b = next(t for name, t in params.items() if name.startswith("lora_B."))
+assert int(lora_a.count_nonzero()) and int(lora_b.count_nonzero()), (
+    "adapter did not attach: the sampled target module still holds PEFT's "
+    "initialisation, so the trained delta was silently dropped"
+)
 ```
 
 ## Measured and not measured
@@ -253,6 +288,45 @@ def _listing(path: str) -> dict:
 def _print_files(files: dict) -> None:
     for name in sorted(files):
         print(f"  {files[name]:>13,}  {name}")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow a redirect: a login page is not a refusal.
+
+    urllib follows 3xx by default. A redirect that ends on an allowed status would
+    otherwise read as privacy passing, so the handler declines and urllib raises
+    the 3xx as an `HTTPError` instead.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ARG002
+        return None
+
+
+def _excerpt(raw: bytes, limit: int = 200) -> str:
+    """The first `limit` characters of a body, on one line, for a failure message."""
+    return raw.decode("utf-8", "replace").strip().replace("\n", " ")[:limit]
+
+
+def _anonymous_status(repo_id: str) -> tuple[int, str]:
+    """The status and a short body excerpt of one unauthenticated read.
+
+    No `Authorization` header is attached, so an excerpt cannot carry the token.
+    Redirects are not followed, and a 3xx comes back as its own code.
+    """
+    request = urllib.request.Request(
+        f"{HUB_BASE}/api/models/{repo_id}",
+        headers={"User-Agent": "eval-gated-lora-agent-verify"},
+    )
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(request, timeout=30) as response:
+            return response.status, _excerpt(response.read(200))
+    except urllib.error.HTTPError as error:
+        try:
+            raw = error.read(200)
+        except Exception:  # noqa: BLE001 - an error body is optional
+            raw = b""
+        return error.code, _excerpt(raw)
 
 
 @app.function(**export_kwargs)
@@ -406,25 +480,45 @@ def verify(repo_id: str):
         )
     checks.append(f"adapter/adapter_model.safetensors is {ADAPTER_WEIGHTS_BYTES:,} bytes")
 
-    expected = set(_listing(QUANT_DIR)) | {f"adapter/{name}" for name in _listing(ADAPTER_DIR)}
-    expected |= {"README.md"}
-    missing = sorted(expected - set(files))
-    if missing:
-        raise AssertionError(f"files the Volume holds but the repo does not: {missing}")
-    checks.append(f"every one of the {len(expected)} source files is in the repo")
+    # Size, not only name. A truncated upload keeps its name, so the whole
+    # name-to-size map is compared: both Volume listings plus the card.
+    source = dict(_listing(QUANT_DIR))
+    source.update({f"adapter/{name}": size for name, size in _listing(ADAPTER_DIR).items()})
+    source["README.md"] = len(MODEL_CARD.encode("utf-8"))
 
-    # An anonymous read must be refused. 401 and 404 both satisfy that; a 200 does not.
-    request = urllib.request.Request(
-        f"https://huggingface.co/api/models/{repo_id}",
-        headers={"User-Agent": "eval-gated-lora-agent-verify"},
+    missing = sorted(set(source) - set(files))
+    if missing:
+        raise AssertionError(f"files the source holds but the repo does not: {missing}")
+
+    wrong = sorted(
+        f"{name} is {files[name]} bytes on the Hub, the source has {size}"
+        for name, size in source.items()
+        if files[name] != size
     )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            code = response.status
-    except urllib.error.HTTPError as error:
-        code = error.code
-    if code == 200:
-        raise AssertionError(f"an anonymous read of {repo_id} returned 200: the repo is readable")
+    if wrong:
+        raise AssertionError("the repo and the source disagree on size: " + "; ".join(wrong))
+
+    unexpected = sorted(set(files) - set(source) - set(HUB_WRITTEN))
+    if unexpected:
+        raise AssertionError(
+            f"files on the Hub that no source accounts for: {unexpected}. "
+            f"Allowed only: {sorted(HUB_WRITTEN)}, which the Hub writes itself."
+        )
+    checks.append(f"{len(source)} source files match the repo in name and size")
+    allowed = sorted(set(files) & set(HUB_WRITTEN))
+    if allowed:
+        checks.append(f"{len(allowed)} Hub-written file allowed: {', '.join(allowed)}")
+
+    # An anonymous read must be refused, and only 401, 403 and 404 are refusals.
+    # The allow-list matters: a 503 is not privacy, and `_NoRedirect` means a
+    # redirect to a login page cannot arrive here as a 200 either.
+    code, excerpt = _anonymous_status(repo_id)
+    if code not in REFUSAL_CODES:
+        raise AssertionError(
+            f"an anonymous read of {repo_id} returned HTTP {code}, which is not a refusal: "
+            f"only {sorted(REFUSAL_CODES)} count, and a redirect is not followed. "
+            f"Body starts: {excerpt!r}"
+        )
     checks.append(f"anonymous read refused with HTTP {code}")
 
     return {
@@ -438,8 +532,73 @@ def verify(repo_id: str):
     }
 
 
+@app.function(**export_kwargs)
+def upload_card():
+    """Re-write `README.md` only, with the privacy guard, and prove nothing else moved.
+
+    The card changed after the upload; the weights and the adapter did not. This
+    reads the listing before and after, so a commit that touched anything else
+    fails here instead of being discovered later.
+    """
+    from huggingface_hub import HfApi
+
+    token = _token()
+    api = HfApi(token=token)
+    account = _whoami(token).get("name")
+    if not account:
+        raise RuntimeError("the token carries no account name; refusing to guess a namespace")
+    repo_id = f"{account}/{REPO_NAME}"
+
+    before = api.model_info(repo_id=repo_id, token=token, files_metadata=True)
+    if not before.private:
+        raise PermissionError(
+            f"{repo_id} is not private. This upload will not write a card to a public repo."
+        )
+    before_files = {s.rfilename: s.size for s in before.siblings}
+    if "model.safetensors" not in before_files:
+        raise AssertionError(f"{repo_id} does not look like the published artifact: {sorted(before_files)}")
+
+    card = MODEL_CARD.encode("utf-8")
+    commit = api.upload_file(
+        path_or_fileobj=card,
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        token=token,
+        commit_message="card: the recorded architecture, an attach check, a manifest by size",
+    )
+
+    after = api.model_info(repo_id=repo_id, token=token, files_metadata=True)
+    after_files = {s.rfilename: s.size for s in after.siblings}
+    moved = sorted(
+        name
+        for name in set(before_files) | set(after_files)
+        if name != "README.md" and before_files.get(name) != after_files.get(name)
+    )
+    if moved:
+        raise AssertionError(f"files other than README.md changed: {moved}")
+    if after_files.get("README.md") != len(card):
+        raise AssertionError(
+            f"README.md is {after_files.get('README.md')} bytes on the Hub, expected {len(card)}"
+        )
+
+    return {
+        "repo_id": repo_id,
+        "commit": getattr(commit, "oid", None),
+        "head": after.sha,
+        "card_bytes": len(card),
+        "files": after_files,
+        "total_bytes": sum(size for size in after_files.values() if size is not None),
+        "unchanged": sorted(name for name in after_files if name != "README.md"),
+    }
+
+
 @app.local_entrypoint()
-def main(private: bool = True, probe_only: bool = False, verify_only: str = ""):
+def main(
+    private: bool = True,
+    probe_only: bool = False,
+    verify_only: str = "",
+    card_only: bool = False,
+):
     if probe_only:
         result = probe.remote()
         print("probe")
@@ -457,6 +616,19 @@ def main(private: bool = True, probe_only: bool = False, verify_only: str = ""):
         print(f"  adapter dir        {result['adapter_dir']} present={result['adapter_dir_present']}")
         _print_files(result["adapter_files"])
         print(f"  adapter bytes      {result['adapter_bytes']:,}")
+        return
+
+    if card_only:
+        result = upload_card.remote()
+        print("card")
+        print(f"  repo               {result['repo_id']}")
+        print(f"  commit             {result['commit']}")
+        print(f"  head               {result['head']}")
+        print(f"  card bytes         {result['card_bytes']:,}")
+        print(f"  files              {len(result['files'])}")
+        _print_files(result["files"])
+        print(f"  total bytes        {result['total_bytes']:,}")
+        print(f"  other files kept   {len(result['unchanged'])} at their previous size")
         return
 
     if verify_only:

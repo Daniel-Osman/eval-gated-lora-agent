@@ -31,13 +31,15 @@ approved adapter adversarial drafts against 2 in 36. Serve - endpoint and demo
 live, 309 s idle cold, 384 s post-deploy first, 2-3 s warm, 400 in 0.96 s and
 4.85 s with no GPU wake, 319 s cold forward, N-110 rejected, N-104 in the
 browser. Export - private Hub repo `Daneil960/eval-gated-qwen3.8-27b`, **16
-files**, 19,075,486,047 bytes, `private True`, anonymous read 401.
+files**, 19,075,487,300 bytes, `private True`, anonymous read 401; the card alone
+was rewritten on 2026-11-17 at commit `c44ae4c7a83988e8ce35b4cdd7ec075cb3310169`.
 
-**No milestone here records a fresh-context PASS.** Milestones 2, 3, 4, 4b, stage 4
-and the stage-5 adjudication slice are each verified on green commands and
-unaccepted, by the rule that an author never signs its own stage; stage 6's deploy
-and demo record, and this web-layer slice, are the same kind. Daniel closed
-training on 2026-11-15, and that is an owner's decision, not a verdict.
+**One slice now carries a fresh-context PASS:** the publish code-fix slice, on
+2026-11-17, after the card re-upload and the seven-check verify. Milestones 2, 3, 4,
+4b, stage 4, the stage-5 adjudication slice, stage 6's deploy and demo record, and
+the web-layer slice remain verified on green commands and unaccepted, by the rule
+that an author never signs its own stage. Daniel closed training on 2026-11-15, and
+that is an owner's decision, not a verdict.
 
 Verified 2026-11-16: `python -m unittest discover -s tests -q` -> `Ran 448 tests`,
 `OK`, exit 0 (443 before the health fix; five new). Web-layer refusal:
@@ -51,15 +53,20 @@ deploy record that preceded this slice (384 s post-deploy first request, REJECTE
 N-110, 3 s warm, 309 s idle cold, scale-down to 0, N-104 in the browser) is in
 `HISTORY.md` under Verified history. `git diff --check` exit 0, no output.
 
-Verified 2026-11-16, private Hub export: `python -m modal run serve/export_hf.py
---verify-only Daneil960/eval-gated-qwen3.8-27b` -> `ok private is True`; `ok
-list_repo_files agrees with model_info on 16 files`; `ok model.safetensors is
+Verified 2026-11-17, private Hub export, after the card-only upload:
+`python -m modal run serve/export_hf.py --verify-only
+Daneil960/eval-gated-qwen3.8-27b` -> exit 0, seven checks: `ok private is True`;
+`ok list_repo_files agrees with model_info on 16 files`; `ok model.safetensors is
 18,568,390,152 bytes`; `ok adapter/adapter_model.safetensors is 467,062,560
-bytes`; `ok every one of the 15 source files is in the repo`; `ok anonymous read
-refused with HTTP 401`. Repo **`Daneil960/eval-gated-qwen3.8-27b`**, **16 files,
-19,075,486,047 bytes**, head `417d1ff`. The token lives only in the Modal secret
-`scenesift-hf` (`HF_TOKEN`). Spend 18.17068511 before, 18.68353523 after,
-**0.51285012** metered, 0.00 billed. No commit here.
+bytes`; `ok 15 source files match the repo in name and size`; `ok 1 Hub-written
+file allowed: .gitattributes`; `ok anonymous read refused with HTTP 401`. Repo
+**`Daneil960/eval-gated-qwen3.8-27b`**, **16 files, 19,075,487,300 bytes**, head
+`c44ae4c7a83988e8ce35b4cdd7ec075cb3310169`. The card-only upload printed `card
+bytes 6,890`, `other files kept 15 at their previous size`, and changed no other
+file; the earlier upload was head `417d1ff` at 19,075,486,047 bytes and a 5,637-byte
+card. The token lives only in the Modal secret `scenesift-hf` (`HF_TOKEN`). Spend:
+the meter read 18.65353634 before the card upload and 18.65353634 after it, so this
+turn added 0.00000000 metered and 0.00 billed; the counter moves with use and lags.
 
 ## Next
 

@@ -435,11 +435,11 @@ repo back with the same token. Transfers use `hf_xet`.
 | Account, resolved by the token | **`Daneil960`** — user, not pro, no orgs |
 | Repo | **`Daneil960/eval-gated-qwen3.8-27b`** |
 | Private | **`True`**, and required: a non-private run is refused before `create_repo`, and the repo is re-read after creation, aborting before the first artifact upload if the flag is not private |
-| Head commit | `417d1ff192989b5fa431397db79b95c2a3fad5cd` |
-| Files, bytes | **16**, **19,075,486,047** |
+| Head commit | `c44ae4c7a83988e8ce35b4cdd7ec075cb3310169` — the card-only re-upload of 2026-11-17; the first upload was `417d1ff192989b5fa431397db79b95c2a3fad5cd` |
+| Files, bytes | **16**, **19,075,487,300** |
 | `model.safetensors` | **18,568,390,152** — the 8 quantized files sit at the root |
 | `adapter/adapter_model.safetensors` | **467,062,560** — 6 adapter files sit under `adapter/` |
-| `README.md` | **5,637** — the model card, a constant in the script |
+| `README.md` | **6,890** — the model card, a constant in the script; it was 5,637 bytes before the card fix |
 | `.gitattributes` | written by the Hub; the 15 source files plus this one make 16 |
 
 The card states Apache-2.0, base `unsloth/Qwen3.8-27B-unsloth-bnb-4bit`, run
@@ -447,7 +447,7 @@ The card states Apache-2.0, base `unsloth/Qwen3.8-27B-unsloth-bnb-4bit`, run
 14 composed schema on seen cases; 0 of 118 against 2 of 36 unsupported claims,
 honest control 4 of 115.
 
-Five checks closed it, all from reading the repo back:
+Seven checks closed it, all from reading the repo back:
 
 ```
 python -m modal run serve/export_hf.py --verify-only Daneil960/eval-gated-qwen3.8-27b
@@ -457,8 +457,16 @@ python -m modal run serve/export_hf.py --verify-only Daneil960/eval-gated-qwen3.
 2. `list_repo_files` agrees with `model_info` on **16** files.
 3. Both large files match their source sizes exactly: 18,568,390,152 and
    467,062,560 bytes.
-4. All **15** source files are present in the repo.
-5. An anonymous read is refused with **HTTP 401**.
+4. All **15** source files match the repo **in name and size**, and the one extra
+   is the Hub-written `.gitattributes`.
+5. An anonymous read is refused with **HTTP 401**, from an allow-list of 401, 403
+   and 404; a 503, a 200 or an unfollowed redirect fails instead.
+
+The 2026-11-17 card-only upload changed one file. It refused on a non-private
+repo, wrote `README.md` at 6,890 bytes as commit
+`c44ae4c7a83988e8ce35b4cdd7ec075cb3310169`, and the read-back held the other 15
+files at their previous sizes. Spend: the meter read 18.65353634 before and
+18.65353634 after, so the delta was 0.00000000 metered and 0.00 billed.
 
 Metered cost: **18.17068511** before the export, **18.68353523** after, so the
 delta is **0.51285012** and the billed figure is **0.00**. That is a counter

@@ -166,7 +166,115 @@ backend, and the card's limits were all folded in.
 - Closed, record gates: `python -m unittest discover -s tests -q` ->
       `Ran 448 tests in 14.242s`, `OK`, exit 0; `git diff --check` exit 0, no
       output; `NOW.md` 100 lines. No code, no deploy, no upload, no commit.
-- Not done, so not ticked: section 4's deploy and live-demo boxes, and any commit.
+- **Independent review of this section, 2026-11-16: FAIL.** The reviewer's three
+      findings and one record gap, quoted, against the tree it read (`76099ee`).
+      The fixes below sit in the working tree and are **unproven pending the
+      re-review**; this ledger claims no PASS and no holdout result.
+      1. High — "the privacy check accepts a non-refusal (`serve/export_hf.py:416-428`).
+         Today only HTTP 200 fails, so 503 (and any other status) is printed as
+         'anonymous read refused'."
+      2. High — "the model card ships a loader that silently drops the adapter
+         (`serve/export_hf.py:133-143`). The card tells readers to use
+         `AutoModelForCausalLM`, and this repo's own record (`docs/SERVING.md:109-115`,
+         `serve/feasibility.py:666-670`) says that path loads without the trained
+         adapter and gives no error."
+      3. Medium — "verification compares names, not sizes (`serve/export_hf.py:409-414`)."
+      4. Record gap — the milestone had no `Holdout:` line and no verdict.
+- Fix 1, privacy allow-list. Red first: `tests/test_export_hf.py` ->
+      `Ran 7 tests`, `FAILED (errors=9)`; the rule and its helper did not exist.
+      Fix: `REFUSAL_CODES = frozenset({401, 403, 404})`; `_anonymous_status` sends no
+      `Authorization` header, opens through `_NoRedirect` so a 3xx is never followed,
+      and returns the code plus a 200-character body excerpt; any other code raises
+      naming the code and the excerpt. Green: `Ran 7 tests`, `OK`; the 503, 200 and
+      302 cases each raise, 401/403/404 pass with `anonymous read refused with HTTP
+      <code>`. Negative proof after the fix: `REFUSAL_CODES` set to empty at runtime
+      reddens the refusal test with `AssertionError: an anonymous read of
+      someone/eval-gated-qwen3.8-27b returned HTTP 404, which is not a refusal: only
+      [] count`, `FAILED (failures=3)`.
+- Follow-up on fix 1, medium: the mocked opener could not tell whether `_NoRedirect`
+      was installed — replacing `build_opener(_NoRedirect)` with `build_opener()` left
+      all 18 tests green. Fixed in the working tree, unproven pending re-review: the
+      test now starts a real server on `127.0.0.1:0`, answers the API path with a 307
+      to `/refuse`, and answers `/refuse` with 401. Driven through `_anonymous_status`,
+      the read returns 307, `/refuse` is never hit, and no `Authorization` header
+      reaches the server. With the handler bypassed inside the test, the same chain
+      answers 401, so the chain discriminates. `HUB_BASE` is now a module constant, so
+      the test points the read at loopback and leaves production on the Hub. Mutation
+      proof: `build_opener()` in the module reddens it with `AssertionError: 307 != 401`
+      and `AssertionError: AssertionError not raised`; reverted, green.
+- Follow-up on fix 1, medium: cleanup was unbounded. The helper used a synchronous
+      `HTTPServer` with no accepted-socket timeout, so an incomplete request pinned
+      `shutdown()` past the join (the reviewer measured "cleanup finished within 1
+      second: False"). Fixed in the working tree, unproven pending re-review: the
+      helper is now a `ThreadingHTTPServer` with `daemon_threads = True`, its handler
+      sets a 0.5 s socket timeout after `super().setup()`, `handle_error` stays quiet,
+      and the `finally` runs `shutdown()`, `server_close()`, `join(timeout=2)`. New
+      test: one socket sends a partial request with no blank line and stays open; the
+      helper still returns inside a second. Red shown by mutation: with the
+      synchronous server and the socket timeout removed, that single test ran past a
+      15 s limit and was killed with no output; restored, `Ran 20 tests`, `OK`.
+- Fix 2, the card loader. Red first: `Ran 5 tests in 0.002s`, `FAILED (failures=3)`,
+      including `AssertionError: 'Qwen3_5ForConditionalGeneration' not found in ...`.
+      Fix: the block loads `Qwen3_5ForConditionalGeneration`, the architecture
+      `docs/SERVING.md:114-115` records, rebinds `PeftModel.from_pretrained`, then
+      asserts a non-empty `model.peft_config` and non-zero `lora_A.` and `lora_B.` in
+      the first module ending `.self_attn.q_proj`; the sentences say PEFT zero-inits
+      `lora_B`, so a dropped adapter is silent. The test execs the block parsed out of
+      `MODEL_CARD`, with its import lines removed and fakes injected. Green: `Ran 12
+      tests`, `OK`. One test was corrected after it failed for the wrong reason: it
+      read the block's explanatory comment as code, so it now strips comment lines
+      before refusing `AutoModelForCausalLM`.
+- Fix 3, manifest by size. Red first: `Ran 18 tests`, three manifest failures,
+      `AssertionError: AssertionError not raised` for the wrong size and the
+      unexpected file, and the old check line `every one of the 5 source files is in
+      the repo`. Fix: one name-to-size map from both Volume listings plus
+      `README.md`; it raises on a missing name, on a size difference quoting both
+      numbers, and on a Hub file no source accounts for. `.gitattributes` is the one
+      allowed extra, on the evidence at `docs/SERVING.md:443` and the fact that
+      `export` uploads only the two folders and the card. Checks read `5 source files
+      match the repo in name and size` and `1 Hub-written file allowed: .gitattributes`.
+      Green: `Ran 18 tests`, `OK`.
+- Gates on the final tree, 2026-11-17: `python -m unittest discover -s tests -q` ->
+      `Ran 468 tests in 16.513s`, `OK`, exit 0; `python -m unittest
+      tests.test_export_hf -q` -> `Ran 20 tests in 2.175s`, `OK`, exit 0; `git diff
+      --check` exit 0, no output; `git status --short` -> ` M serve/export_hf.py`,
+      `M tasks/todo.md`, ` M docs/SERVING.md`, ` M NOW.md`,
+      `?? tests/test_export_hf.py`.
+- Card-only upload, 2026-11-17, on the owner's approval: added `upload_card()` and
+      `--card-only` to `serve/export_hf.py`; it refuses a non-private repo, writes
+      only `README.md`, and re-reads the listing before and after. Run: commit
+      `c44ae4c7a83988e8ce35b4cdd7ec075cb3310169`, `card bytes 6,890`, `files 16`,
+      `total bytes 19,075,487,300`, `other files kept 15 at their previous size`.
+      Spend: `python -m modal billing summary --for "this month" --json` read
+      **18.65353634** before and **18.65353634** after, so **0.00000000** metered
+      and **0.00** billed. Counter lag noted; it moves with use.
+- Verify after the upload: `python -m modal run serve/export_hf.py --verify-only
+      Daneil960/eval-gated-qwen3.8-27b` -> exit 0, `ok private is True`;
+      `ok list_repo_files agrees with model_info on 16 files`; `ok model.safetensors
+      is 18,568,390,152 bytes`; `ok adapter/adapter_model.safetensors is 467,062,560
+      bytes`; `ok 15 source files match the repo in name and size`; `ok 1 Hub-written
+      file allowed: .gitattributes`; `ok anonymous read refused with HTTP 401`.
+- Independent verdict, 2026-11-17: **PASS on the code-fix slice**, as the owner
+      reported the reviewer's disposition. Finding 1, the privacy allow-list: fixed,
+      and the test was red for real (`307 != 401` when the handler is dropped).
+      Finding 2, the card loader: fixed, the block is executed out of the card itself
+      and a zero `lora_B` raises. Finding 3, the manifest: fixed, a wrong-sized
+      `config.json` and an unexplained Hub file both raise, and `.gitattributes` is
+      the only allowed extra. The two follow-ups the reviewer raised against the
+      fixes — a mocked opener that could not tell the handler was installed, and
+      unbounded cleanup on an incomplete request — are fixed with a loopback chain
+      and a threading server, each proved red by mutation. The record gap is closed
+      by this block. No held-out case was run.
+- Holdout: none run — the FAIL review reported three findings and no held-out case,
+      and the fixes were reviewed without one. This line records the gap, not a
+      result; the held-out case is still owed and is the first thing a later review
+      should run.
+- Publication milestone: **accepted 2026-11-17**, on the green verify above and the
+      owner's say-so. The card drift is closed: the 6,890-byte card is on the Hub and
+      the seven checks pass.
+- Not done, so not ticked: section 4's deploy and live-demo boxes were run earlier
+      and are not re-run here. The commit that carries this record is local only;
+      this repo has no remote, so nothing is pushed.
 - Two brief shapes did not survive the client: `secret=` is `secrets=[...]`, and
       `--probe-only true` is `--probe-only` / `--no-probe-only`. `hf_transfer` is
       deprecated upstream, so the image pins `huggingface_hub[hf_xet]==2.4.0`.
